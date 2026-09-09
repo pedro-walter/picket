@@ -59,6 +59,18 @@ export interface ReportResponse extends SelfUpdateResponse {
 
 type FP = ReportedFinding & { fingerprint: string };
 
+// D1 caps bound parameters per statement near 100 and we keep each batch()
+// transaction modest; a bulk first image scan is many hundreds of findings,
+// and per-row round-trips there blow the agent's report timeout.
+const D1_VARS = 90;
+const D1_BATCH = 50;
+
+async function flushBatch(env: Env, stmts: D1PreparedStatement[]): Promise<void> {
+  for (let i = 0; i < stmts.length; i += D1_BATCH) {
+    await env.DB.batch(stmts.slice(i, i + D1_BATCH));
+  }
+}
+
 export async function ingestReport(env: Env, agent: Agent, payload: ReportPayload): Promise<ReportResponse> {
   const now = nowIso();
 
@@ -164,70 +176,91 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
     reported.set(fp, { ...f, fingerprint: fp });
   }
 
+  // one read for every reported fingerprint up front, then a single batched
+  // write pass below - see D1_VARS / D1_BATCH.
+  const priorStatus = new Map<string, string>();
+  {
+    const fps = [...reported.keys()];
+    for (let i = 0; i < fps.length; i += D1_VARS) {
+      const chunk = fps.slice(i, i + D1_VARS);
+      const rows =
+        (await env.DB.prepare(
+          `SELECT fingerprint, status FROM findings WHERE fingerprint IN (${chunk.map(() => '?').join(',')})`,
+        )
+          .bind(...chunk)
+          .all<{ fingerprint: string; status: string }>()).results ?? [];
+      for (const r of rows) priorStatus.set(r.fingerprint, r.status);
+    }
+  }
+
   const opened: FP[] = [];
   const reopened: FP[] = [];
   const resolved: ResolvedItem[] = [];
+  const writes: D1PreparedStatement[] = [];
 
   for (const [fp, f] of reported) {
-    const existing = await env.DB.prepare('SELECT status FROM findings WHERE fingerprint = ?')
-      .bind(fp)
-      .first<{ status: string }>();
+    const existing = priorStatus.get(fp);
     const supp = matchSuppression(supps, f);
     const sev = (f.severity ?? 'info').toLowerCase();
     const title = f.title ?? defaultTitle(f);
     const detail = f.detail ?? '';
     const stateJson = JSON.stringify({ last: f, suppressed_by: supp?.id ?? null });
 
-    if (!existing) {
+    if (existing === undefined) {
       const status = supp ? 'muted' : 'open';
-      await env.DB.prepare(
-        `INSERT INTO findings
-           (fingerprint, agent_id, kind, subject, identifier, severity, title, detail, first_seen, last_seen, status, state_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-        .bind(fp, agent.id, f.kind, f.subject, f.identifier, sev, title, detail, now, now, status, stateJson)
-        .run();
+      writes.push(
+        env.DB.prepare(
+          `INSERT INTO findings
+             (fingerprint, agent_id, kind, subject, identifier, severity, title, detail, first_seen, last_seen, status, state_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(fp, agent.id, f.kind, f.subject, f.identifier, sev, title, detail, now, now, status, stateJson),
+      );
       if (status === 'open') opened.push(f);
       continue;
     }
 
-    if (existing.status === 'resolved') {
+    if (existing === 'resolved') {
       const status = supp ? 'muted' : 'open';
-      await env.DB.batch([
+      writes.push(
         env.DB.prepare(
           'UPDATE findings SET status = ?, last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ? WHERE fingerprint = ?',
         ).bind(status, now, sev, title, detail, stateJson, fp),
         env.DB.prepare('DELETE FROM notifications WHERE fingerprint = ?').bind(fp),
-      ]);
+      );
       if (status === 'open') reopened.push(f);
       continue;
     }
 
-    if (existing.status === 'muted' && !supp) {
+    if (existing === 'muted' && !supp) {
       // the suppression rule that muted it is gone / expired -> back to open
-      await env.DB.batch([
+      writes.push(
         env.DB.prepare(
           'UPDATE findings SET status = ?, last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ? WHERE fingerprint = ?',
         ).bind('open', now, sev, title, detail, stateJson, fp),
         env.DB.prepare('DELETE FROM notifications WHERE fingerprint = ?').bind(fp),
-      ]);
+      );
       reopened.push(f);
       continue;
     }
 
-    if ((existing.status === 'open' || existing.status === 'acked') && supp) {
-      await env.DB.prepare('UPDATE findings SET status = ?, last_seen = ?, state_json = ? WHERE fingerprint = ?')
-        .bind('muted', now, stateJson, fp)
-        .run();
+    if ((existing === 'open' || existing === 'acked') && supp) {
+      writes.push(
+        env.DB.prepare('UPDATE findings SET status = ?, last_seen = ?, state_json = ? WHERE fingerprint = ?').bind(
+          'muted',
+          now,
+          stateJson,
+          fp,
+        ),
+      );
       continue;
     }
 
     // unchanged (open / acked / still-muted): bump last_seen, refresh display
-    await env.DB.prepare(
-      'UPDATE findings SET last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ? WHERE fingerprint = ?',
-    )
-      .bind(now, sev, title, detail, stateJson, fp)
-      .run();
+    writes.push(
+      env.DB.prepare(
+        'UPDATE findings SET last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ? WHERE fingerprint = ?',
+      ).bind(now, sev, title, detail, stateJson, fp),
+    );
   }
 
   // ---- resolution: stored finding whose kind has current state but is absent ----
@@ -243,14 +276,16 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
   for (const s of stored) {
     if (!kindsWithCurrentState.has(s.kind)) continue;
     if (reported.has(s.fingerprint)) continue;
-    await env.DB.batch([
+    writes.push(
       env.DB.prepare("UPDATE findings SET status = 'resolved', last_seen = ? WHERE fingerprint = ?").bind(now, s.fingerprint),
       env.DB.prepare('DELETE FROM notifications WHERE fingerprint = ?').bind(s.fingerprint),
-    ]);
+    );
     if (s.status === 'open') {
       resolved.push({ kind: s.kind, subject: s.subject, identifier: s.identifier, title: s.title });
     }
   }
+
+  await flushBatch(env, writes);
 
   await maybeNotify(env, agent.name, opened, reopened, resolved);
 
@@ -272,15 +307,22 @@ async function maybeNotify(
     ...reopened.map((f) => ({ f, reason: 'reopened' as const })),
   ];
 
-  const fresh: { f: FP; reason: 'new' | 'reopened' }[] = [];
-  for (const c of candidates) {
-    const already = await env.DB.prepare(
-      "SELECT 1 FROM notifications WHERE fingerprint = ? AND kind = 'alert' AND channel = 'email'",
-    )
-      .bind(c.f.fingerprint)
-      .first();
-    if (!already) fresh.push(c);
+  const alreadySent = new Set<string>();
+  {
+    const fps = candidates.map((c) => c.f.fingerprint);
+    for (let i = 0; i < fps.length; i += D1_VARS) {
+      const chunk = fps.slice(i, i + D1_VARS);
+      const rows =
+        (await env.DB.prepare(
+          `SELECT fingerprint FROM notifications
+           WHERE kind = 'alert' AND channel = 'email' AND fingerprint IN (${chunk.map(() => '?').join(',')})`,
+        )
+          .bind(...chunk)
+          .all<{ fingerprint: string }>()).results ?? [];
+      for (const r of rows) alreadySent.add(r.fingerprint);
+    }
   }
+  const fresh = candidates.filter((c) => !alreadySent.has(c.f.fingerprint));
 
   const notifyResolved = (env.NOTIFY_RESOLVED ?? 'true') === 'true';
   if (fresh.length === 0 && !(notifyResolved && resolved.length > 0)) return;
@@ -293,13 +335,14 @@ async function maybeNotify(
   );
 
   const stamp = nowIso();
-  for (const x of fresh) {
-    await env.DB.prepare(
-      "INSERT OR IGNORE INTO notifications (fingerprint, sent_at, channel, kind) VALUES (?, ?, 'email', 'alert')",
-    )
-      .bind(x.f.fingerprint, stamp)
-      .run();
-  }
+  await flushBatch(
+    env,
+    fresh.map((x) =>
+      env.DB.prepare(
+        "INSERT OR IGNORE INTO notifications (fingerprint, sent_at, channel, kind) VALUES (?, ?, 'email', 'alert')",
+      ).bind(x.f.fingerprint, stamp),
+    ),
+  );
 }
 
 /**
@@ -316,16 +359,16 @@ export async function applyNewSuppression(env: Env, rule: Suppression): Promise<
       .all<{ fingerprint: string; kind: string; subject: string; identifier: string }>()).results ?? [];
 
   const now = nowIso();
-  let n = 0;
+  const writes: D1PreparedStatement[] = [];
   for (const r of rows) {
     if (!matchSuppression([rule], r)) continue;
-    await env.DB.batch([
+    writes.push(
       env.DB.prepare("UPDATE findings SET status = 'muted', last_seen = ? WHERE fingerprint = ?").bind(now, r.fingerprint),
       env.DB.prepare('DELETE FROM notifications WHERE fingerprint = ?').bind(r.fingerprint),
-    ]);
-    n++;
+    );
   }
-  return n;
+  await flushBatch(env, writes);
+  return writes.length / 2;
 }
 
 interface ReleaseRow {
