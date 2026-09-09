@@ -42,12 +42,13 @@ jobs:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
           set -euo pipefail
-          for f in picket-agent_*_linux_*; do
+          # only the binaries, never the .sig files a re-run may have left behind
+          for f in picket-agent_*_linux_amd64 picket-agent_*_linux_arm64; do
             cosign sign-blob --yes --key env://COSIGN_KEY \
               --output-signature "${f}.sig" "$f"
           done
           # sanity: the sig verifies against the committed public key
-          for f in picket-agent_*_linux_*; do
+          for f in picket-agent_*_linux_amd64 picket-agent_*_linux_arm64; do
             [ -f "${f}.sig" ] || exit 1
             cosign verify-blob --key ../../deploy/cosign.pub \
               --signature "${f}.sig" "$f"
