@@ -87,7 +87,7 @@ if [ "$UPGRADE" -eq 0 ]; then
   umask 077
   printf '%s' "$TOKEN" > /etc/picket/token
   chown root:picket /etc/picket/token
-  chmod 0600 /etc/picket/token
+  chmod 0640 /etc/picket/token          # root writes, the picket service user reads
 fi
 
 # --- download + verify + install the binary --------------------------

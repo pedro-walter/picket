@@ -1,5 +1,5 @@
 # /etc/picket/agent.yaml  — root:picket 0640. No secrets here; the agent
-# token lives in token_file (0600, git-ignored).
+# token lives in token_file (0640 root:picket, git-ignored).
 
 central_url: https://picket.souspike.com.br
 agent_name: prod-server
