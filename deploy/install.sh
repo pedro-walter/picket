@@ -13,6 +13,19 @@ set -eu
 CENTRAL="" NAME="" TOKEN="" VERSION="" UPGRADE=0
 REPO="${PICKET_REPO:-pedro-walter/picket}"
 RELEASE_BASE=""
+RAW_BASE="${PICKET_RAW_BASE:-https://raw.githubusercontent.com/${REPO}/main/deploy}"
+
+# Fetch a file from the deploy/ tree: prefer a local sibling (when this script
+# is run from a checkout), else pull it from raw GitHub (curl | sh bootstrap).
+# $1 = filename in deploy/, $2 = destination path.
+fetch_deploy_file() {
+  _local="$(dirname "$0")/$1"
+  if [ -f "$_local" ]; then
+    cp "$_local" "$2"
+  else
+    curl -fsSL "$RAW_BASE/$1" -o "$2"
+  fi
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -88,11 +101,14 @@ want="$(grep -E "  ${BIN}\$" "$tmp/SHA256SUMS" | awk '{print $1}')"
 got="$(sha256sum "$tmp/$BIN" | awk '{print $1}')"
 [ -n "$want" ] && [ "$want" = "$got" ] || { echo "SHA256 mismatch for $BIN" >&2; exit 1; }
 
-PUB="$(dirname "$0")/cosign.pub"
+PUB="$tmp/cosign.pub"
+fetch_deploy_file cosign.pub "$PUB" 2>/dev/null || true
 if command -v cosign >/dev/null 2>&1 && [ -f "$PUB" ] && ! grep -q PLACEHOLDER "$PUB"; then
   cosign verify-blob --key "$PUB" --signature "$tmp/$BIN.sig" "$tmp/$BIN"
+  echo "cosign signature verified"
 else
-  echo "WARNING: cosign signature NOT verified (cosign missing or cosign.pub is a placeholder)" >&2
+  echo "WARNING: cosign signature NOT verified (cosign missing or cosign.pub unavailable);" >&2
+  echo "         SHA-256 checksum was verified against SHA256SUMS." >&2
 fi
 
 install -o picket -g picket -m 0755 "$tmp/$BIN" /var/lib/picket/bin/picket-agent.new
@@ -100,7 +116,8 @@ mv -f /var/lib/picket/bin/picket-agent.new /var/lib/picket/bin/picket-agent
 ln -sf /var/lib/picket/bin/picket-agent /usr/local/bin/picket-agent
 
 # --- systemd ---------------------------------------------------------
-install -m 0644 "$(dirname "$0")/picket-agent.service" /etc/systemd/system/picket-agent.service
+fetch_deploy_file picket-agent.service "$tmp/picket-agent.service"
+install -m 0644 "$tmp/picket-agent.service" /etc/systemd/system/picket-agent.service
 systemctl daemon-reload
 systemctl enable --now picket-agent
 systemctl restart picket-agent
