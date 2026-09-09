@@ -1,0 +1,34 @@
+[Unit]
+Description=Picket monitoring agent
+Documentation=https://github.com/pedrohardware/picket
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picket
+Group=picket
+SupplementaryGroups=docker
+# Binary lives under the picket-owned state dir so self-update can atomically
+# rename() over it without root. /usr/local/bin/picket-agent is a symlink to it.
+ExecStart=/var/lib/picket/bin/picket-agent --config /etc/picket/agent.yaml --binary /var/lib/picket/bin/picket-agent
+Restart=always
+RestartSec=10
+
+# crane / trivy read registry creds from $HOME/.docker/config.json (or
+# $DOCKER_CONFIG). The agent runs as `picket`, so put creds for non-first-party
+# private images under /var/lib/picket/.docker/config.json.
+Environment=HOME=/var/lib/picket
+Environment=DOCKER_CONFIG=/var/lib/picket/.docker
+
+# hardening - the agent only reads apt state / /proc / /var/run and dials
+# registries + the central URL; it writes solely under /var/lib/picket.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/picket
+StateDirectory=picket
+
+[Install]
+WantedBy=multi-user.target

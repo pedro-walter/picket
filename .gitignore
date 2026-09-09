@@ -1,0 +1,23 @@
+# node / wrangler
+node_modules/
+.wrangler/
+dist/
+*.tsbuildinfo
+
+# local secrets - never commit
+.dev.vars
+.env
+*.local
+cli/picketctl/picketctl.env
+/etc-picket-token
+# release signing: only cosign.pub (public) is committed; the private key never is
+cosign.key
+*.key
+!deploy/cosign.pub
+
+# go
+/agent/picket-agent
+*.test
+
+# editor / OS
+.DS_Store

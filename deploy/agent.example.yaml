@@ -1,0 +1,43 @@
+# /etc/picket/agent.yaml  — root:picket 0640. No secrets here; the agent
+# token lives in token_file (0600, git-ignored).
+
+central_url: https://picket.souspike.com.br
+agent_name: prod-server
+token_file: /etc/picket/token
+
+# scheduler tiers (Go duration strings)
+report_interval: 15m        # cheap loop: reboot/apt/containers/host-health + POST
+image_scan_interval: 12h    # heavy loop: trivy + crane over compose images
+daily_interval: 24h         # cert expiry + tool-binary refresh
+
+self_update: true
+update_window: "02:00-04:00" # local time; empty = any time
+
+# image-scan section inputs. Every `image:` line across these files is
+# watched (first-party soul-spike-backend/-web are skipped). Needs `crane`
+# and `trivy` on $PATH or in <state-dir>/bin; private non-first-party images
+# need registry creds at /var/lib/picket/.docker/config.json.
+compose_files:
+  - /home/pedro/production-setup/docker-compose.yml
+
+# cert-expiry targets (daily section) - real external TLS handshake per domain
+domains:
+  - souspike.com.br
+  - healthchecks.souspike.com.br
+
+# host-health check: filesystem + optional data-dir size tracking
+paths:
+  disk: /                                  # filesystem to measure (default "/")
+  # mongo_data: /home/pedro/production-setup/mongo_data       # production server
+  # registry_data: /home/pedro/registry/registry_data         # registry server
+
+# alert cut-offs, forwarded to central which evaluates them (differ per server)
+thresholds:
+  cpu_pct: 90
+  mem_pct: 90
+  disk_pct: 85
+  mongo_data_gb: 20
+  registry_data_gb: 15
+
+tools:
+  auto_manage: true          # download+verify trivy/crane into /var/lib/picket/bin (step 7)

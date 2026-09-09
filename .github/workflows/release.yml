@@ -1,0 +1,67 @@
+name: release
+
+# Tag a release: git tag v0.2.0 && git push origin v0.2.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the GitHub Release + upload assets
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Build static binaries
+        working-directory: agent
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.version=${v}" \
+              -o "dist/picket-agent_${v}_linux_${arch}" ./cmd/picket-agent
+          done
+          cd dist && sha256sum picket-agent_* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Sign binaries (cosign, key-based)
+        working-directory: agent/dist
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for f in picket-agent_*_linux_*; do
+            cosign sign-blob --yes --key env://COSIGN_KEY \
+              --output-signature "${f}.sig" "$f"
+          done
+          # sanity: the sig verifies against the committed public key
+          for f in picket-agent_*_linux_*; do
+            [ -f "${f}.sig" ] || exit 1
+            cosign verify-blob --key ../../deploy/cosign.pub \
+              --signature "${f}.sig" "$f"
+          done
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            agent/dist/picket-agent_*_linux_*
+            agent/dist/SHA256SUMS
+
+      # After the release publishes, register it with central and roll it out:
+      #   picketctl release add ${GITHUB_REF_NAME} \
+      #     --base-url https://github.com/<owner>/picket/releases/download/${GITHUB_REF_NAME} \
+      #     --sha256sums SHA256SUMS
+      #   picketctl rollout ${GITHUB_REF_NAME} canary     # one bucket first

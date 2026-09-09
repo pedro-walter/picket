@@ -1,0 +1,40 @@
+name = "picket"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+
+# Custom domain (picket.souspike.com.br) is attached in the Cloudflare
+# dashboard once the Worker is first deployed. workers.dev stays on for
+# `wrangler dev` / initial testing.
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "picket"
+# Replace after `wrangler d1 create picket`. A placeholder is fine for
+# `wrangler dev` (local SQLite) and `wrangler d1 migrations apply picket --local`.
+database_id = "ea9dafbf-1e8c-42e2-8cf5-efef29f1a56f"
+migrations_dir = "migrations"
+
+[triggers]
+# */15 -> agent-offline + stale-section sweep ; 13:00 UTC (~10:00 BRT) -> daily digest
+crons = ["*/15 * * * *", "0 13 * * *"]
+
+[vars]
+REPORT_INTERVAL_SECONDS = "900"
+OFFLINE_GRACE_SECONDS = "300"
+SECTION_STALE_SECONDS = "93600"    # ~26h: alert if an image/daily scan stops refreshing
+ALERT_FROM = "picket@souspike.com.br"
+ALERT_TO = "pedrohardware@gmail.com"
+DEFAULT_DESIRED_VERSION = "0.1.0"
+RELEASE_BASE_URL = "https://github.com/pedrohardware/picket/releases/download"
+NOTIFY_RESOLVED = "true"
+DIGEST_ALWAYS = "false"
+
+# Secrets (set with `wrangler secret put <NAME>`), never in this file:
+#   RESEND_API_KEY   Resend API key (re_...) for outbound mail
+#   ADMIN_TOKEN      bearer/query token guarding /admin/* and the dashboard
+#   TOKEN_PEPPER     extra input mixed into stored agent-token hashes
+
+[[routes]]
+pattern="picket.souspike.com.br"
+custom_domain=true

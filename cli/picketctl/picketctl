@@ -1,0 +1,209 @@
+#!/bin/sh
+# picketctl - admin CLI for a picket central service (Cloudflare Worker).
+#
+# Config (env, or ~/.config/picket/picketctl.env with KEY=value lines):
+#   PICKET_URL          e.g. https://picket.souspike.com.br  (or http://localhost:8787 for `wrangler dev`)
+#   PICKET_ADMIN_TOKEN  the Worker's ADMIN_TOKEN secret
+#
+# Needs: sh, curl. Uses jq for pretty output if present.
+set -eu
+
+CONF="${PICKET_CONFIG:-$HOME/.config/picket/picketctl.env}"
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+
+: "${PICKET_URL:?set PICKET_URL (e.g. https://picket.souspike.com.br)}"
+: "${PICKET_ADMIN_TOKEN:?set PICKET_ADMIN_TOKEN}"
+BASE="${PICKET_URL%/}"
+
+json_str() {
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$1" | jq -Rs .
+  elif command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$1" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'
+  else
+    printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  fi
+}
+json_str_or_null() { [ -z "${1:-}" ] && printf 'null' || json_str "$1"; }
+pretty() { if command -v jq >/dev/null 2>&1; then jq .; else cat; fi; }
+
+req() {
+  method="$1"; path="$2"; shift 2
+  curl -fsS -X "$method" \
+    -H "X-Admin-Token: $PICKET_ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    "$@" "$BASE$path"
+}
+
+usage() {
+  cat <<'EOF'
+picketctl <command> [args]
+
+  mint-agent <name> [bucket] [notes]      create an agent; prints its token ONCE
+  list-agents                             list agents + last-seen
+  set-version <name> <version|null>       set desired_version (staggered rollout)
+  findings [--agent N] [--status S]       list findings
+  ack <fingerprint>                       acknowledge an open finding
+  mute <fingerprint> --reason "..." [--expires ISO8601]
+                                          mute (adds a finding-scoped suppression)
+  unmute <fingerprint>                    drop that mute rule, reopen
+  rules list                             list suppression rules
+  rules add --kind K --reason "..." [--subject G --identifier G --cve G --expires ISO8601]
+  rules rm <id>                          delete a suppression rule
+  seed-ignores <dir>                     import server-checks/image-watch/ignore/*.txt
+  release list                           list registered releases
+  release add <version> --base-url U --sha256sums FILE [--notes "..."]
+                                         register a GitHub Release's artifacts
+  release rm <version>                   unregister a release
+  rollout <version> [bucket]             set desired_version for a rollout bucket
+EOF
+}
+
+cmd="${1:-help}"
+[ $# -gt 0 ] && shift || true
+
+case "$cmd" in
+  mint-agent)
+    name="${1:?usage: picketctl mint-agent <name> [bucket] [notes]}"
+    bucket="${2:-default}"; notes="${3:-}"
+    req POST /admin/agents --data "{\"name\":$(json_str "$name"),\"rollout_bucket\":$(json_str "$bucket"),\"notes\":$(json_str "$notes")}" | pretty
+    ;;
+
+  list-agents)
+    req GET /admin/agents | pretty
+    ;;
+
+  set-version)
+    name="${1:?usage: picketctl set-version <name> <version|null>}"
+    ver="${2:?usage: picketctl set-version <name> <version|null>}"
+    if [ "$ver" = null ]; then body='{"desired_version":null}'; else body="{\"desired_version\":$(json_str "$ver")}"; fi
+    req PATCH "/admin/agents/$name" --data "$body" | pretty
+    ;;
+
+  findings)
+    qs=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --agent) qs="$qs&agent=$2"; shift 2 ;;
+        --status) qs="$qs&status=$2"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
+      esac
+    done
+    req GET "/admin/findings?${qs#&}" | pretty
+    ;;
+
+  ack)
+    fp="${1:?usage: picketctl ack <fingerprint>}"
+    req POST "/admin/findings/$fp/ack" | pretty
+    ;;
+
+  mute)
+    fp="${1:?usage: picketctl mute <fingerprint> --reason \"...\" [--expires ISO8601]}"; shift
+    reason=""; expires=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --reason) reason="$2"; shift 2 ;;
+        --expires) expires="$2"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
+      esac
+    done
+    [ -n "$reason" ] || { echo "--reason required" >&2; exit 2; }
+    req POST "/admin/findings/$fp/mute" \
+      --data "{\"reason\":$(json_str "$reason"),\"expires_at\":$(json_str_or_null "$expires")}" | pretty
+    ;;
+
+  unmute)
+    fp="${1:?usage: picketctl unmute <fingerprint>}"
+    req POST "/admin/findings/$fp/unmute" | pretty
+    ;;
+
+  rules)
+    sub="${1:?usage: picketctl rules <list|add|rm> ...}"
+    [ $# -gt 0 ] && shift || true
+    case "$sub" in
+      list) req GET /admin/suppressions | pretty ;;
+      rm)   id="${1:?usage: picketctl rules rm <id>}"; req DELETE "/admin/suppressions/$id" | pretty ;;
+      add)
+        kind=""; subject="*"; identifier="*"; cve="*"; reason=""; expires=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --kind) kind="$2"; shift 2 ;;
+            --subject) subject="$2"; shift 2 ;;
+            --identifier) identifier="$2"; shift 2 ;;
+            --cve) cve="$2"; shift 2 ;;
+            --reason) reason="$2"; shift 2 ;;
+            --expires) expires="$2"; shift 2 ;;
+            *) echo "unknown arg: $1" >&2; exit 2 ;;
+          esac
+        done
+        [ -n "$kind" ] && [ -n "$reason" ] || { echo "--kind and --reason required" >&2; exit 2; }
+        req POST /admin/suppressions --data "$(printf '{"kind":%s,"subject_glob":%s,"identifier_glob":%s,"cve_glob":%s,"reason":%s,"expires_at":%s}' \
+          "$(json_str "$kind")" "$(json_str "$subject")" "$(json_str "$identifier")" "$(json_str "$cve")" "$(json_str "$reason")" "$(json_str_or_null "$expires")")" | pretty
+        ;;
+      *) echo "unknown rules subcommand: $sub" >&2; exit 2 ;;
+    esac
+    ;;
+
+  seed-ignores)
+    dir="${1:?usage: picketctl seed-ignores <path-to server-checks/image-watch/ignore>}"
+    for f in "$dir"/*.txt; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f" .txt)"
+      repo="$(printf '%s' "$base" | tr '_' '/')"
+      reason="$(grep '^[[:space:]]*#' "$f" | sed 's/^[[:space:]]*#[[:space:]]\{0,1\}//' | tr '\n' ' ' | cut -c1-900)"
+      [ -n "$reason" ] || reason="migrated from ignore/$base.txt"
+      grep -vE '^[[:space:]]*(#|$)' "$f" | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//' | while IFS= read -r pkg; do
+        [ -n "$pkg" ] || continue
+        printf 'seed %s | *|%s ... ' "$repo" "$pkg"
+        req POST /admin/suppressions --data "$(printf '{"kind":"image-cve","subject_glob":%s,"identifier_glob":%s,"cve_glob":"*","reason":%s,"author":"seed-ignores"}' \
+          "$(json_str "$repo")" "$(json_str "*|$pkg")" "$(json_str "$reason")")" >/dev/null && echo ok
+      done
+    done
+    ;;
+
+  release)
+    sub="${1:?usage: picketctl release <list|add|rm> ...}"
+    [ $# -gt 0 ] && shift || true
+    case "$sub" in
+      list) req GET /admin/releases | pretty ;;
+      rm)   ver="${1:?usage: picketctl release rm <version>}"; req DELETE "/admin/releases/$ver" | pretty ;;
+      add)
+        ver="${1:?usage: picketctl release add <version> --base-url U --sha256sums FILE}"; shift
+        base=""; sums=""; notes=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --base-url) base="$2"; shift 2 ;;
+            --sha256sums) sums="$2"; shift 2 ;;
+            --notes) notes="$2"; shift 2 ;;
+            *) echo "unknown arg: $1" >&2; exit 2 ;;
+          esac
+        done
+        [ -n "$base" ] && [ -n "$sums" ] || { echo "--base-url and --sha256sums required" >&2; exit 2; }
+        v="${ver#v}"; base="${base%/}"
+        # SHA256SUMS lines: "<hex>  picket-agent_<v>_linux_<arch>"
+        get_sum() { grep -E "picket-agent_${v}_linux_$1\$" "$sums" | awk '{print $1}' | head -1; }
+        sa="$(get_sum amd64)"; sr="$(get_sum arm64)"
+        [ -n "$sa" ] || { echo "no amd64 line for picket-agent_${v}_linux_amd64 in $sums" >&2; exit 2; }
+        ua="$base/picket-agent_${v}_linux_amd64"
+        body="{\"version\":$(json_str "$v"),\"url_amd64\":$(json_str "$ua"),\"sha256_amd64\":$(json_str "$sa"),\"sig_url_amd64\":$(json_str "$ua.sig")"
+        if [ -n "$sr" ]; then
+          ur="$base/picket-agent_${v}_linux_arm64"
+          body="$body,\"url_arm64\":$(json_str "$ur"),\"sha256_arm64\":$(json_str "$sr"),\"sig_url_arm64\":$(json_str "$ur.sig")"
+        fi
+        [ -n "$notes" ] && body="$body,\"notes\":$(json_str "$notes")"
+        body="$body}"
+        req POST /admin/releases --data "$body" | pretty
+        ;;
+      *) echo "unknown release subcommand: $sub" >&2; exit 2 ;;
+    esac
+    ;;
+
+  rollout)
+    ver="${1:?usage: picketctl rollout <version> [bucket]}"; bucket="${2:-default}"
+    req POST /admin/rollout --data "{\"version\":$(json_str "${ver#v}"),\"bucket\":$(json_str "$bucket")}" | pretty
+    ;;
+
+  help|-h|--help) usage ;;
+  *) echo "unknown command: $cmd" >&2; usage; exit 2 ;;
+esac
