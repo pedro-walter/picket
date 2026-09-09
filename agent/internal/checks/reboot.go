@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 // rebootRequiredPath is the sentinel apt / unattended-upgrades touches; the

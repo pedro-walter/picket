@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/pedrohardware/picket/agent/internal/report"
-	"github.com/pedrohardware/picket/agent/internal/toolexec"
+	"github.com/pedro-walter/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/toolexec"
 )
 
 // Apt reports (kind "apt"):

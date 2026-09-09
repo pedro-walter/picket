@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 // SysHealth samples host CPU / RAM / disk plus the two data-dir sizes and

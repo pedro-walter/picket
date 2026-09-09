@@ -27,9 +27,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pedrohardware/picket/agent/internal/client"
-	"github.com/pedrohardware/picket/agent/internal/config"
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/client"
+	"github.com/pedro-walter/picket/agent/internal/config"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 // CheckFunc is one check. Returning an error means "could not run" - its kind

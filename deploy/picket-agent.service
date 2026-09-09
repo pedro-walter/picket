@@ -1,6 +1,6 @@
 [Unit]
 Description=Picket monitoring agent
-Documentation=https://github.com/pedrohardware/picket
+Documentation=https://github.com/pedro-walter/picket
 After=network-online.target docker.service
 Wants=network-online.target
 

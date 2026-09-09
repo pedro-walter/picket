@@ -16,14 +16,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pedrohardware/picket/agent/internal/checks"
-	"github.com/pedrohardware/picket/agent/internal/client"
-	"github.com/pedrohardware/picket/agent/internal/config"
-	"github.com/pedrohardware/picket/agent/internal/report"
-	"github.com/pedrohardware/picket/agent/internal/scheduler"
-	"github.com/pedrohardware/picket/agent/internal/selfupdate"
-	"github.com/pedrohardware/picket/agent/internal/toolexec"
-	"github.com/pedrohardware/picket/agent/internal/tools"
+	"github.com/pedro-walter/picket/agent/internal/checks"
+	"github.com/pedro-walter/picket/agent/internal/client"
+	"github.com/pedro-walter/picket/agent/internal/config"
+	"github.com/pedro-walter/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/scheduler"
+	"github.com/pedro-walter/picket/agent/internal/selfupdate"
+	"github.com/pedro-walter/picket/agent/internal/toolexec"
+	"github.com/pedro-walter/picket/agent/internal/tools"
 )
 
 // version is overridden at build time: -ldflags "-X main.version=1.2.3".

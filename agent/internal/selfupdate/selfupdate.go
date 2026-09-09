@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pedrohardware/picket/agent/internal/httpdl"
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/httpdl"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 type Updater struct {

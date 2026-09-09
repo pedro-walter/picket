@@ -1,7 +1,7 @@
 #!/bin/sh
 # picket-agent bootstrap / disaster-recovery installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/pedrohardware/picket/main/deploy/install.sh | sudo sh -s -- \
+#   curl -fsSL https://raw.githubusercontent.com/pedro-walter/picket/main/deploy/install.sh | sudo sh -s -- \
 #     --central https://picket.souspike.com.br --name prod-server --token <TOKEN> \
 #     --version v0.2.0
 #
@@ -11,7 +11,7 @@
 set -eu
 
 CENTRAL="" NAME="" TOKEN="" VERSION="" UPGRADE=0
-REPO="${PICKET_REPO:-pedrohardware/picket}"
+REPO="${PICKET_REPO:-pedro-walter/picket}"
 RELEASE_BASE=""
 
 while [ $# -gt 0 ]; do

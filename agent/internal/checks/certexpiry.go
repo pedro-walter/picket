@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 // CertExpiry reports (kind "cert-expiry") a domain whose live TLS leaf cert

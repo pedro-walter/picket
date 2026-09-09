@@ -16,7 +16,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 func keypair(t *testing.T) (*ecdsa.PrivateKey, []byte) {

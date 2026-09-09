@@ -112,7 +112,7 @@ non-first-party images need registry creds at `/var/lib/picket/.docker/config.js
 3. Register + stage the rollout:
    ```sh
    picketctl release add v0.2.0 \
-     --base-url https://github.com/pedrohardware/picket/releases/download/v0.2.0 \
+     --base-url https://github.com/pedro-walter/picket/releases/download/v0.2.0 \
      --sha256sums ./SHA256SUMS
    picketctl rollout v0.2.0 canary        # one bucket first
    # watch, then: picketctl rollout v0.2.0 default

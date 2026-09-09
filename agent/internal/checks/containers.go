@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pedrohardware/picket/agent/internal/compose"
-	"github.com/pedrohardware/picket/agent/internal/report"
-	"github.com/pedrohardware/picket/agent/internal/toolexec"
+	"github.com/pedro-walter/picket/agent/internal/compose"
+	"github.com/pedro-walter/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/toolexec"
 )
 
 // Containers reports (kind "container-stale") a running container whose

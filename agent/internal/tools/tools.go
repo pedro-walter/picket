@@ -18,7 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pedrohardware/picket/agent/internal/httpdl"
+	"github.com/pedro-walter/picket/agent/internal/httpdl"
 )
 
 // Spec pins one tool. Bump version + hashes here and ship it as an agent

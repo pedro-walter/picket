@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pedrohardware/picket/agent/internal/client"
-	"github.com/pedrohardware/picket/agent/internal/config"
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/client"
+	"github.com/pedro-walter/picket/agent/internal/config"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 // fakeCentral records every payload and lets a test script the response.

@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 // Client POSTs reports to central with per-agent bearer auth plus an HMAC

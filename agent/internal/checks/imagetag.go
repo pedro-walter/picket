@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/pedrohardware/picket/agent/internal/compose"
-	"github.com/pedrohardware/picket/agent/internal/report"
-	"github.com/pedrohardware/picket/agent/internal/toolexec"
-	"github.com/pedrohardware/picket/agent/internal/vsort"
+	"github.com/pedro-walter/picket/agent/internal/compose"
+	"github.com/pedro-walter/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/toolexec"
+	"github.com/pedro-walter/picket/agent/internal/vsort"
 )
 
 // ImageTag reports (kind "image-tag") when a newer tag exists within the

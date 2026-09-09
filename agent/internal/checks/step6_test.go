@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pedrohardware/picket/agent/internal/report"
+	"github.com/pedro-walter/picket/agent/internal/report"
 )
 
 func byID(fs []report.Finding) map[string]report.Finding {

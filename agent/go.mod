@@ -1,4 +1,4 @@
-module github.com/pedrohardware/picket/agent
+module github.com/pedro-walter/picket/agent
 
 go 1.23
 

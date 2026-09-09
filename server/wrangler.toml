@@ -26,7 +26,7 @@ SECTION_STALE_SECONDS = "93600"    # ~26h: alert if an image/daily scan stops re
 ALERT_FROM = "picket@souspike.com.br"
 ALERT_TO = "pedrohardware@gmail.com"
 DEFAULT_DESIRED_VERSION = "0.1.0"
-RELEASE_BASE_URL = "https://github.com/pedrohardware/picket/releases/download"
+RELEASE_BASE_URL = "https://github.com/pedro-walter/picket/releases/download"
 NOTIFY_RESOLVED = "true"
 DIGEST_ALWAYS = "false"
 

@@ -78,9 +78,9 @@ Prereqs (one-time): a real `deploy/cosign.pub` + the same PEM in
 git tag v0.2.0 && git push origin v0.2.0          # release.yml builds + signs + publishes
 
 export PICKET_URL=https://picket.souspike.com.br PICKET_ADMIN_TOKEN=...
-curl -fsSLO https://github.com/pedrohardware/picket/releases/download/v0.2.0/SHA256SUMS
+curl -fsSLO https://github.com/pedro-walter/picket/releases/download/v0.2.0/SHA256SUMS
 picketctl release add v0.2.0 \
-  --base-url https://github.com/pedrohardware/picket/releases/download/v0.2.0 \
+  --base-url https://github.com/pedro-walter/picket/releases/download/v0.2.0 \
   --sha256sums ./SHA256SUMS
 picketctl release list
 
