@@ -35,10 +35,15 @@ Current overlays:
   patches perl-base/libpcre2-8-0/libsqlite3-0/gzip/libssh2-1t64/libssl3t64/
   openssl/openssl-provider-legacy (apt) + setuptools/msgpack (pip) on top
   of `healthchecks/healthchecks:v4.4`, upstream's frozen newest tag as of
-  2026-09-13. Not yet built/pushed — see
+  2026-09-13. Built and pushed as
+  `docker.souspike.com.br/healthchecks/healthchecks:4.4-1` — see
   [`docs/reviews/2026-09-13-image-cve.md`](../docs/reviews/2026-09-13-image-cve.md)
-  for the full finding list and the `build-and-push.sh` command to finish
-  it from a host with docker + registry access.
+  for the full finding list and
+  [`docs/reviews/2026-09-13-image-cve-soul-spike.md`](../docs/reviews/2026-09-13-image-cve-soul-spike.md)
+  for verification of the built image. Still not pointed at by any compose
+  file (`/picket-review` doesn't do that) — the image sitting in the
+  registry doesn't clear Picket's findings on its own; someone has to
+  update whichever docker-compose.yml pins this image and redeploy.
 
 ## Why upstream freshness can't be automatic once an overlay exists
 
