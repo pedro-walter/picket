@@ -15,6 +15,7 @@ See [`PLAN.md`](./PLAN.md) for the full design and rationale.
 | `agent/` | `picket-agent` Go daemon | **step 7 done** — all checks + hash-gated sections + signed self-update + `crane`/`trivy` auto-download |
 | `deploy/` | `install.sh` + systemd unit + `agent.example.yaml` + `cosign.pub` | `install.sh` wired (needs a published release + real `cosign.pub`) |
 | `.github/workflows/` | `release.yml` — build + cosign-sign + publish on `v*` tag | needs `COSIGN_KEY` / `COSIGN_PASSWORD` secrets |
+| `custom-docker/` | Third-party image overlays `/picket-review` builds + pushes for CVEs with no upstream tag bump | scaffolded, no overlays checked in yet |
 | `docs/` | architecture / operations / migration / setup | in progress |
 
 Build order (`PLAN.md`): **1** Worker skeleton ✅ · **2** agent skeleton + reboot
@@ -132,8 +133,15 @@ periodically to triage the open backlog: it groups by image, checks each
 one against its own `image-tag` finding and the "fixed in" version trivy
 reports, and writes `docs/reviews/<date>-image-cve.md` recommending, per
 package, a tag bump / a stopgap rebuild / or a suppression rule with a
-90-day expiry. Read-only by design — it never runs `picketctl rules add`
-or edits anything itself; you apply what you agree with.
+90-day expiry.
+
+Suppression rules and compose edits stay read-only — it never runs
+`picketctl rules add` or points a compose file at anything; you apply what
+you agree with. A stopgap rebuild is the one exception: it writes a real
+overlay under [`custom-docker/`](./custom-docker/README.md) and, when run
+somewhere with docker + registry access, builds and pushes it itself
+(`custom-docker/build-and-push.sh`) — since a pushed image tag does
+nothing until a compose file is pointed at it, that part's still on you.
 
 ## Next
 

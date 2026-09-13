@@ -1,6 +1,6 @@
 ---
 name: picket-review
-description: "Use for the periodic (~weekly) review of Picket's open image-cve findings: for every image/package decide whether to bump the pinned tag, ship a custom rebuild, or suppress with a documented reason, then produce a reviewable report plus ready-to-run picketctl commands. Invoke as /picket-review [agent-name]. Never applies anything on its own."
+description: "Use for the periodic (~weekly) review of Picket's open image-cve findings: for every image/package decide whether to bump the pinned tag, ship a custom rebuild (writing + building + pushing a custom-docker/ overlay), or suppress with a documented reason, then produce a reviewable report plus ready-to-run picketctl commands. Invoke as /picket-review [agent-name]. Never applies a suppression rule or touches a compose file on its own."
 ---
 
 # Picket image-CVE review
@@ -12,16 +12,27 @@ replaces staring at `picketctl findings` by hand and reasoning about each
 CVE individually — the same reasoning done ad hoc after the first
 `monitoria-soul-spike` scan (2026-09-13, 113 findings).
 
-**Contract: read-only.** This skill produces a report and a block of
-ready-to-run commands. It never runs `picketctl rules add`, edits a
-compose file, or writes a Dockerfile that gets built — those are for the
-user to execute after reading the report. If asked to "apply" a report,
-that's a separate, explicit instruction outside this skill's contract, not
-something to do as part of running it.
+**Contract.** For suppression rules and compose files this is read-only:
+the skill produces a report and a block of ready-to-run `picketctl rules
+add` commands, and never runs them or edits a compose file itself — those
+are for the user to execute after reading the report. For a "custom
+rebuild" (category B below) it's allowed to go further and actually build
+the thing: writing a real `custom-docker/<name>/Dockerfile` and running
+`custom-docker/build-and-push.sh` to build and push it to the registry,
+since a pushed image tag is inert until a compose file is pointed at it —
+see [`../../../custom-docker/README.md`](../../../custom-docker/README.md).
+It never edits a compose file to actually start using the image it built.
+If asked to "apply" a suppression from a report, that's a separate,
+explicit instruction outside this skill's contract, not something to do as
+part of running it.
 
 Run from the repo root. Needs `cli/picketctl/picketctl` and
 `~/.config/picket/picketctl.env` (or `PICKET_URL`/`PICKET_ADMIN_TOKEN` in
-the environment) — same config the operator already uses.
+the environment) — same config the operator already uses. Building and
+pushing an overlay additionally needs a real docker daemon and registry
+auth already set up, which only a real host has, not a sandboxed session —
+see Step 3's category B for how to degrade gracefully when either is
+missing.
 
 ## Step 1 — Pull the current backlog
 
@@ -104,20 +115,65 @@ frozen forever — it never gets newer packages baked in on its own, so
 **B — Custom rebuild.** No newer upstream tag, but `detail` shows a
 `FixedVersion` (the distro has already shipped the fix; upstream just
 hasn't re-cut the image). Batch every such package for one image into a
-single thin Dockerfile rather than one per CVE:
+single thin overlay rather than one per CVE, and actually materialize it
+under `custom-docker/` (see [`custom-docker/README.md`](../../../custom-docker/README.md)
+for the pattern — same idea as `souspike/custom-docker`, one shared
+`build-and-push.sh`):
 
-```dockerfile
-FROM <repo>:<current-tag>
-RUN apt-get update \
- && apt-get install --only-upgrade -y <pkg1> <pkg2> ... \
- && rm -rf /var/lib/apt/lists/*
-```
+1. Pick `<name>` = the image's own repo name with `/` kept as-is if it has
+   one (`healthchecks/healthchecks`, `postgres`) — it becomes the registry
+   path `docker.souspike.com.br/<name>`. If `custom-docker/<name>/` already
+   exists from a prior review, read its Dockerfile first: same `BASE_TAG`
+   means this is a follow-up patch (bump the version's numeric suffix), a
+   different `BASE_TAG` means upstream already moved and the old overlay's
+   packages need re-checking against the new base before you reuse any of
+   them.
+2. Write `custom-docker/<name>/Dockerfile`:
+   ```dockerfile
+   ARG BASE_TAG=<current-tag>
+   FROM <repo>:${BASE_TAG}
+   USER root
+   RUN apt-get update -q \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --only-upgrade \
+         <pkg1> <pkg2> ... \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+   USER <original-runtime-user>
+   ```
+   A `pip`-installed package (not apt) needs its own `RUN pip install
+   --no-cache-dir -U <pkg>` line instead — check which is which; don't
+   guess. If the base image's apt sources pin a frozen `snapshot.debian.org`
+   timestamp older than the fix (the same issue the prior
+   `souspike/custom-docker/healthchecks` overlay hit on `v4.3`), point
+   `/etc/apt/sources.list.d/debian.sources` at the live suites first,
+   the way that overlay's Dockerfile did — check with `docker run --rm
+   <repo>:<tag> cat /etc/apt/sources.list.d/debian.sources` if you have
+   docker access, otherwise say in the report that this is unverified and
+   the build may need it. **Only re-add `USER <original-user>` if you
+   actually know that user's name** (a prior overlay for the same repo, or
+   something you can verify) — if you don't, leave the image running as
+   root rather than guess a username that might not exist and break the
+   container at start time, and say plainly in the report that this needs
+   a human to confirm the right non-root user before it's used.
+3. Build and push it:
+   ```sh
+   custom-docker/build-and-push.sh <name> <version> [<base-tag>]
+   ```
+   `<version>` is `<base-tag-without-leading-v>-<n>` (`4.4-1`, `4.4-2`
+   for a follow-up patch on the same base). This needs a working docker
+   daemon and registry auth — if either is missing (check `docker info`
+   first) the script fails fast and says so; when that happens, still
+   commit the Dockerfile, and tell the user in the report to run that exact
+   `build-and-push.sh` command themselves from a host that has both. Never
+   claim an image was pushed unless the script actually reported success.
+4. List the new overlay in `custom-docker/README.md`'s "Current overlays"
+   section, same as `souspike/custom-docker` tracks its own.
 
-Flag it explicitly as a stopgap in the report — drop the rebuild the
-moment upstream publishes a tag that already includes the fix, and note
-which compose service(s) would need `build:` instead of `image:` to use it
-(you don't know the compose file path from Picket data alone; say "wherever
-this image is pinned" and let the user place it).
+Flag it explicitly as a stopgap in the report — drop the overlay the
+moment upstream publishes a tag that already includes the fix — and note
+which compose service(s) would need updating to `image:
+docker.souspike.com.br/<name>:<version>` to actually use it (you don't know
+the compose file path from Picket data alone; say "wherever this image is
+pinned" and let the user place it — the skill never edits a compose file).
 
 **C — Suppress.** Only when B doesn't apply: `detail` carries no
 `FixedVersion` yet (nothing to install even if you wanted to), or you have
@@ -153,6 +209,15 @@ alone, and still put an expiry on it.
 | CVE-2026-13221 | perl-base | critical | yes (5.40.1-6+deb13u1) | bump tag | OS package; v5.0 rebuild expected to carry the Debian point release |
 | ... | | | | | |
 
+**Custom rebuild — pushed:**
+`custom-docker/healthchecks/Dockerfile` built and pushed as
+`docker.souspike.com.br/healthchecks/healthchecks:4.4-1` (or, if the build
+couldn't run here: "Dockerfile committed at `custom-docker/.../Dockerfile`;
+build+push it yourself with `custom-docker/build-and-push.sh
+healthchecks/healthchecks 4.4-1` from a host with docker + registry
+access"). State whichever actually happened — never phrase it as done if
+the script didn't run or failed.
+
 **Suppress (90d, re-review next pass):**
 ​```sh
 ./picketctl rules add --kind image-cve --subject healthchecks/healthchecks \
@@ -166,9 +231,14 @@ Close with a short summary: total findings reviewed, counts per action
 
 ## Step 5 — Hand it back
 
-Print the report path and the summary counts in your reply. Do not run any
-of the printed commands, and do not create the Dockerfiles as real files
-in the repo — inline them in the report as fenced code the user copies
-if they want them. Applying a suppression or cutting a rebuild is a
-judgment call about the team's own risk tolerance; this skill's job ends at
-giving them what they need to make it in under a minute.
+Print the report path and the summary counts in your reply, and for each
+category-B image whether its overlay actually got built+pushed or only
+committed as a Dockerfile (say which, and if only committed, give the
+exact `build-and-push.sh` command to finish it). Do not run any of the
+printed `picketctl rules add` commands, and do not edit any compose file —
+those stay for the user to execute after reading the report. Applying a
+suppression is a judgment call about the team's own risk tolerance; a
+custom rebuild's actual construction isn't (it's mechanical once the
+package list is known), which is why this skill builds and pushes that
+part itself when it can, but still leaves pointing a compose file at the
+result to the user.
