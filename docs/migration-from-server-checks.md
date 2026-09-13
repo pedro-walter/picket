@@ -1,6 +1,8 @@
 # Migration from `souspike/server-checks`
 
-> Stub. Execute after ~1 week of parallel running (PLAN.md "Migration & retirement").
+> Stub. Execute after a few days of parallel running per agent (PLAN.md
+> "Migration & retirement") — 4 days was enough in practice for
+> `monitoria-soul-spike`, not a fixed calendar week.
 
 ## 1. Seed suppressions from the ignore lists
 
@@ -16,9 +18,11 @@ One `suppressions` row per package line: `kind=image-cve`,
 
 ## 2. Parity window
 
-For one week, compare Picket `image-cve` findings against the still-running
+For a few days, compare Picket `image-cve` findings against the still-running
 `check-images.sh` Healthchecks pings. Expect the same set of images flagged and
-the same CVEs (modulo suppressions).
+the same CVEs (modulo suppressions). `monitoria-soul-spike` cleared this after
+4 days (2026-09-09 → 2026-09-13) — treat that as the bar per agent, not a
+fixed week.
 
 ## 3. Retire crons
 

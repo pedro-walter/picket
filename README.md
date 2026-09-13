@@ -21,8 +21,9 @@ See [`PLAN.md`](./PLAN.md) for the full design and rationale.
 Build order (`PLAN.md`): **1** Worker skeleton ✅ · **2** agent skeleton + reboot
 check ✅ · **3** image CVE + tag-freshness ✅ · 4 suppression dashboard (server ✅) ·
 5 notifications ✅ · **6** apt / stale-container / host-health / cert-expiry ✅ ·
-**7** release pipeline + signed self-update + tools auto-download ✅ · 8 one-week
-parallel run ← in progress (`monitoria-soul-spike` live since 2026-09-09) ·
+**7** release pipeline + signed self-update + tools auto-download ✅ · **8**
+parallel run (a few days, not a fixed week) — `monitoria-soul-spike` cleared
+it 2026-09-09→13 ← other 2 servers still need onboarding ·
 **9** weekly image-CVE review skill (`/picket-review`) ✅.
 
 ## Central service — quick start
@@ -145,9 +146,26 @@ nothing until a compose file is pointed at it, that part's still on you.
 
 ## Next
 
-Build-order step 8: one-week parallel run — Picket findings vs the still-live
-`check-images.sh` Healthchecks pings — then the migration/retirement steps in
-[`docs/migration-from-server-checks.md`](./docs/migration-from-server-checks.md).
+Onboard `prod-server` and `docker-souspike` (see `docs/setup.md`) so all 3
+servers are running the agent; `monitoria-soul-spike` already cleared its
+parity window (Picket findings vs the still-live `check-images.sh`
+Healthchecks pings, 4 days) and is ready for the migration/retirement steps
+in [`docs/migration-from-server-checks.md`](./docs/migration-from-server-checks.md)
+on its own.
 
 Setup notes for deploying the Worker and the agent hosts:
 [`docs/setup.md`](./docs/setup.md).
+
+## Admin CLI — install once
+
+`picketctl` is a plain POSIX-sh script; install it once wherever you'll run
+admin commands from, so you don't have to `cd cli/picketctl` every time:
+
+```sh
+install -m 0755 cli/picketctl/picketctl ~/.local/bin/picketctl   # or /usr/local/bin, with sudo
+```
+
+It reads `~/.config/picket/picketctl.env` automatically (or `PICKET_URL`/
+`PICKET_ADMIN_TOKEN` from the environment) — see "Central service — quick
+start" above for what that file needs. Re-run the `install` command after
+pulling changes to `cli/picketctl/picketctl`.

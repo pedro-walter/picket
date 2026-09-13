@@ -280,12 +280,17 @@ channel (Discord/Telegram webhook) is a later drop-in.
   `server-checks/image-watch/sync-to-servers.sh`.
 - systemd unit changes (rare) ride `install.sh --upgrade`.
 
-## Migration & retirement (after ~1 week parallel run)
+## Migration & retirement (after a short parallel run per agent)
+
+Originally scoped as ~1 week; in practice 4 days of `monitoria-soul-spike`
+running alongside `check-images.sh` was enough to trust the parity, so the
+bar is "a few days," not a fixed calendar week — applies per newly-onboarded
+agent, not once globally.
 
 1. Seed `suppressions` from the seven `server-checks/image-watch/ignore/*.txt`
    files: one row per package (`kind=image-cve`, `subject_glob=<repo>`,
    `identifier_glob=<pkg>`, `reason=` the existing justification comment).
-2. Cross-check: for one week, Picket image-CVE findings vs the still-running
+2. Cross-check: for a few days, Picket image-CVE findings vs the still-running
    `check-images.sh` Healthchecks pings — expect parity.
 3. Remove cron entries for `check-images.sh`, `check-security-updates.sh`,
    `check-pending-restart.sh`, `check-system-health.sh`, `check-cert-expiry.sh`.
@@ -321,7 +326,8 @@ up.
 5. Notifications: Resend, new-finding email, agent-offline cron, daily digest.
 6. Remaining cheap/daily checks: apt, stale containers, host health, cert expiry.
 7. Release pipeline + cosign + self-update + `install.sh`; roll to all 3 servers.
-8. One-week parallel run, then migration steps above.
+8. A few days' parallel run per agent (4 was enough for the first one), then
+   migration steps above.
 9. (Separate, later) the weekly dependency-review skill.
 
 ## Verification
@@ -342,7 +348,7 @@ up.
   signature, swaps the binary, restarts, and reports the new version — and that it
   only does so inside `update_window`.
 - Parity: Picket image-CVE findings match `check-images.sh` Healthchecks output
-  for the whole parallel week.
+  for the whole parallel run (a few days, not necessarily a full week).
 
 ## Key source files to read in `souspike` before starting
 
