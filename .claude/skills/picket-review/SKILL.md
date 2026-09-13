@@ -50,13 +50,25 @@ context for phrasing a *new* rule consistently with existing ones.
 
 Everything needed lives in the findings themselves:
 
-- **Currently pinned tag** — every `image-cve` finding's `detail` starts
-  with trivy's own `<repo>:<tag> (<os>): ...` prefix (e.g.
-  `healthchecks/healthchecks:v4.4 (debian 13.6): perl-base 5.40.1-6 -> ...`).
-  Parse it from there. If a `detail` doesn't carry it, say so in the report
-  instead of guessing.
+- **Currently pinned tag** — trivy scans one "Target" per OS-package layer
+  AND one per embedded language-runtime binary it finds inside the image;
+  only the OS-layer one's `detail` starts with `<repo>:<tag> (<os>): ...`
+  (e.g. `postgres:16-alpine (alpine 3.24.1): libssl3 ...`). A binary target
+  instead prefixes with its in-image path (e.g. `usr/local/bin/gosu: stdlib
+  v1.24.6 -> ...` — that's a Go stdlib CVE baked into a vendored helper
+  binary, not an OS package). **Scan every finding for the subject**, not
+  just the first, and take the tag from whichever one matches
+  `^<repo>:<tag> \(`. If none do, say so in the report instead of guessing.
 - **Is a newer tag already available?** — an `image-tag` finding with the
-  same `subject`; its `identifier` is `<current>-><latest>`.
+  same `subject`; its `identifier` is `<current>-><latest>`. Zero
+  `image-tag` findings across the board is itself informative (nothing
+  agent-side looks newer), but it can't tell rolling-tag-already-rebuilt
+  from truly-nothing-newer — for a public image, a quick registry check
+  disambiguates: Docker Hub's tags API needs no auth for public repos,
+  e.g. `curl -fsS "https://hub.docker.com/v2/repositories/<repo>/tags?page_size=100&name=<prefix>"
+  | jq -r '.results[] | "\(.name)\t\(.last_updated)"'` — the `last_updated`
+  on the currently-pinned tag itself tells you whether/when it was last
+  rebuilt.
 - **Is a fix published?** — trivy appends `-> fixed in <version>` to
   `detail` whenever the distro repo has one. Its absence means "no fix
   exists yet," full stop — don't infer one.
@@ -76,6 +88,18 @@ dozens of OS-package CVEs at once (see `healthchecks/healthchecks` below).
 State plainly that this is **not verified fixed** until Picket rescans the
 new tag on its next `image-scan` cycle — recommend the bump, don't also
 suppress the finding it's meant to clear.
+
+Before choosing between A/B/C, note whether the pinned tag is **rolling** or
+**frozen** — it changes what "wait for upstream" means. A major-only or
+`-alpine`/`-slim` style tag (`16-alpine`, `v3.7`) is periodically rebuilt
+*in place* by the vendor with a newer base image, same tag name — check its
+last-push date on the registry (e.g. Docker Hub's `tags` API) against
+today; if the vendor rebuilds every few weeks, a plain re-pull may already
+carry the fix, or will soon. A version-pinned release tag (`v4.4`) is
+frozen forever — it never gets newer packages baked in on its own, so
+"wait for a rebuild" isn't a real option; only a new upstream release
+(check the registry for one — that's category A) or your own rebuild
+(category B) actually fixes it.
 
 **B — Custom rebuild.** No newer upstream tag, but `detail` shows a
 `FixedVersion` (the distro has already shipped the fix; upstream just
@@ -104,6 +128,18 @@ permanent, unreviewed ignore here. Write `--reason` as the actual
 justification a future reader (including next week's you) can check —
 "no fix published yet for CVE-2026-56862 in postgres's bundled Go runtime
 as of 2026-09-13" is a reason; "low risk" alone is not.
+
+A binary-target finding (the `usr/local/bin/<name>: stdlib ...` shape from
+Step 2) is a stdlib CVE compiled into a *specific vendored helper binary*,
+not the image's actual service. It's a legitimate "unused at runtime"
+argument only when you can say what that binary's job actually is and that
+the vulnerable stdlib package isn't on its path — e.g. `gosu` in official
+Docker images is a minimal setuid-then-exec wrapper that never opens a
+network connection, so a `crypto/tls` finding inside it is very likely dead
+code; a `libc`/`syscall` finding in the same binary is not the same claim.
+Say which binary and what you know about its actual scope in the reason;
+don't wave every embedded-binary CVE through as unreachable by category
+alone, and still put an expiry on it.
 
 ## Step 4 — Write the report
 
