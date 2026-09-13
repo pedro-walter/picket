@@ -19,5 +19,8 @@ cosign.key
 /agent/picket-agent
 *.test
 
+# scratch downloads from cutting/registering a release (docs/operations.md)
+cli/picketctl/SHA256SUMS
+
 # editor / OS
 .DS_Store

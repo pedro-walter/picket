@@ -21,7 +21,8 @@ Build order (`PLAN.md`): **1** Worker skeleton ✅ · **2** agent skeleton + reb
 check ✅ · **3** image CVE + tag-freshness ✅ · 4 suppression dashboard (server ✅) ·
 5 notifications ✅ · **6** apt / stale-container / host-health / cert-expiry ✅ ·
 **7** release pipeline + signed self-update + tools auto-download ✅ · 8 one-week
-parallel run ← next · 9 weekly review skill.
+parallel run ← in progress (`monitoria-soul-spike` live since 2026-09-09) ·
+**9** weekly image-CVE review skill (`/picket-review`) ✅.
 
 ## Central service — quick start
 
@@ -121,6 +122,18 @@ non-first-party images need registry creds at `/var/lib/picket/.docker/config.js
 Each agent verifies the SHA-256 **and** the cosign signature against its
 baked-in key before the atomic swap; it only swaps inside `update_window`.
 While `cosign.pub` is the placeholder, self-update is disabled (fail-safe).
+
+## Weekly image-CVE review
+
+`image-cve` findings are raw trivy output — no ignore-list filtering
+happens agent-side. Run `/picket-review` (a Claude Code project skill,
+[`.claude/skills/picket-review/`](./.claude/skills/picket-review/SKILL.md))
+periodically to triage the open backlog: it groups by image, checks each
+one against its own `image-tag` finding and the "fixed in" version trivy
+reports, and writes `docs/reviews/<date>-image-cve.md` recommending, per
+package, a tag bump / a stopgap rebuild / or a suppression rule with a
+90-day expiry. Read-only by design — it never runs `picketctl rules add`
+or edits anything itself; you apply what you agree with.
 
 ## Next
 
