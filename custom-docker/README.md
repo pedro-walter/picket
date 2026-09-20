@@ -35,10 +35,16 @@ Current overlays:
   patches perl-base/libpcre2-8-0/libsqlite3-0/gzip/libssh2-1t64/libssl3t64/
   openssl/openssl-provider-legacy (apt) + setuptools/msgpack (pip) on top
   of `healthchecks/healthchecks:v4.4`, upstream's frozen newest tag as of
-  2026-09-13. Not yet built/pushed — see
+  2026-09-13. Built and pushed as
+  `docker.souspike.com.br/healthchecks/healthchecks:4.4-1`, and
+  `monitoria-soul-spike`'s compose file has been pointed at it — confirmed
+  by `docker inspect` (image created 2026-09-13T10:35:47-03:00, never
+  rebuilt since) during the 2026-09-16 review. See
   [`docs/reviews/2026-09-13-image-cve.md`](../docs/reviews/2026-09-13-image-cve.md)
-  for the full finding list and the `build-and-push.sh` command to finish
-  it from a host with docker + registry access.
+  for the original finding list and
+  [`docs/reviews/2026-09-16-image-cve.md`](../docs/reviews/2026-09-16-image-cve.md)
+  for what Picket found once it rescanned the overlay itself (all
+  suppress, no rebuild needed yet).
 
 ## Why upstream freshness can't be automatic once an overlay exists
 
