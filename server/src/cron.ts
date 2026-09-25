@@ -22,11 +22,12 @@ export async function offlineCheck(env: Env): Promise<void> {
       .bind(fp)
       .first();
     if (already) continue;
-    await sendEmail(
+    const sent = await sendEmail(
       env,
       `[picket] ${a.name} is offline`,
       `No report from ${a.name} since ${a.last_report_at}.\nOffline threshold: ${threshold} (2 x ${interval}s + ${grace}s grace).`,
     );
+    if (!sent) continue; // don't mark as notified — retry on the next sweep
     await env.DB.prepare(
       "INSERT OR IGNORE INTO notifications (fingerprint, sent_at, channel, kind) VALUES (?, ?, 'email', 'offline')",
     )
@@ -61,12 +62,13 @@ export async function staleSectionCheck(env: Env): Promise<void> {
       .bind(fp)
       .first();
     if (already) continue;
-    await sendEmail(
+    const sent = await sendEmail(
       env,
       `[picket] ${r.name}: ${r.section} scan is stale`,
       `The "${r.section}" scan on ${r.name} last ran ${r.generated_at} (older than ${staleAfter}s).\n` +
         `Its findings are still shown as-is - not resolved - until a fresh scan lands.`,
     );
+    if (!sent) continue; // don't mark as notified — retry on the next sweep
     await env.DB.prepare(
       "INSERT OR IGNORE INTO notifications (fingerprint, sent_at, channel, kind) VALUES (?, ?, 'email', 'stale-section')",
     )

@@ -1,5 +1,6 @@
 import type { Env } from './index';
 import { sha256Hex, hmacSha256Hex, timingSafeEqualHex } from './util';
+import { verifyAccessJwt } from './access';
 
 export interface Agent {
   id: string;
@@ -47,22 +48,36 @@ export async function authenticateAgent(req: Request, rawBody: string, env: Env)
   return { agent };
 }
 
+export interface AdminAuthResult {
+  ok: boolean;
+  /** Verified Access identity, when auth succeeded via Access. */
+  email?: string;
+}
+
 /**
- * /admin/* + dashboard guard. Cloudflare Access (recommended for production)
- * injects an authenticated-identity header we trust. Without Access, an
- * ADMIN_TOKEN presented via X-Admin-Token, `Authorization: Bearer`, or a
- * `?token=` query param is accepted.
+ * /admin/* + dashboard guard. When CF_ACCESS_TEAM_DOMAIN is configured,
+ * Cloudflare Access is required and its JWT is cryptographically verified
+ * (see ./access.ts) — the identity header Access injects is never trusted on
+ * its own, since a request reaching the Worker directly (its *.workers.dev
+ * URL, which Access doesn't cover) could otherwise forge it by hand.
+ * Without Access configured (e.g. local `wrangler dev`), an ADMIN_TOKEN
+ * presented via X-Admin-Token, `Authorization: Bearer`, or a `?token=` query
+ * param is accepted instead.
  */
-export function authenticateAdmin(req: Request, env: Env): boolean {
-  if (req.headers.get('Cf-Access-Authenticated-User-Email')) return true;
-  if (!env.ADMIN_TOKEN) return false;
+export async function authenticateAdmin(req: Request, env: Env): Promise<AdminAuthResult> {
+  if (env.CF_ACCESS_TEAM_DOMAIN) {
+    const email = await verifyAccessJwt(req, env);
+    return email ? { ok: true, email } : { ok: false };
+  }
+  if (!env.ADMIN_TOKEN) return { ok: false };
   const url = new URL(req.url);
   const provided =
     req.headers.get('X-Admin-Token') ??
     req.headers.get('Authorization')?.match(/^Bearer\s+(.+)$/)?.[1] ??
     url.searchParams.get('token') ??
     '';
-  return provided.length > 0 && timingSafeEqualHex(hexPad(provided), hexPad(env.ADMIN_TOKEN));
+  const ok = provided.length > 0 && timingSafeEqualHex(hexPad(provided), hexPad(env.ADMIN_TOKEN));
+  return { ok };
 }
 
 // pad to compare non-hex admin tokens without early-exit length leak

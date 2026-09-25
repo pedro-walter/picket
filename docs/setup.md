@@ -113,9 +113,12 @@ npx wrangler secret put RESEND_API_KEY   # paste a Resend key (see below)
 **Rotate the Resend key.** `souspike/monitoring/.env` and
 `souspike/maintenance/.env` are committed with a live `re_…` key — do **not**
 reuse it. In the Resend dashboard: create a **new** API key for Picket, put
-that one here, then delete the old key. While there, confirm `souspike.com.br`
-shows **verified** under Domains (it should already); `ALERT_FROM` in
-`wrangler.toml` is `picket@souspike.com.br`, `ALERT_TO` is
+that one here, then delete the old key. While there, confirm the *exact*
+domain `ALERT_FROM` sends from shows **verified** under Domains — Resend
+verification is per subdomain, not per apex, so `picket@souspike.com.br`
+will be rejected if only `correio.souspike.com.br` (or any other subdomain)
+is the one actually verified. `ALERT_FROM` in `wrangler.toml` is
+`picket@correio.souspike.com.br`, `ALERT_TO` is
 `pedrohardware@gmail.com` — edit those vars if you want different addresses.
 
 > `TOKEN_PEPPER` is mixed into stored agent-token hashes and must not change
@@ -157,23 +160,40 @@ curl -s https://picket.souspike.com.br/healthz      # -> ok   (may take a few mi
 
 ### 2.6 Protect `/admin/*` and the dashboard
 
-**Quick path (v1-acceptable):** do nothing here — the Worker already requires
-`ADMIN_TOKEN` for `/admin/*` and `/` (dashboard at `/?token=<ADMIN_TOKEN>`).
-Keep `ADMIN_TOKEN` long and secret.
-
-**Recommended — add Cloudflare Access** (Zero Trust → Access → Applications):
+`ADMIN_TOKEN` (via `?token=`, `X-Admin-Token`, or `Authorization: Bearer`) is
+only a local-dev fallback now — for a real deployment, configure Cloudflare
+Access (Zero Trust → Access → Applications). The Worker cryptographically
+verifies Access's JWT itself (`server/src/access.ts`), so once
+`CF_ACCESS_TEAM_DOMAIN`/`CF_ACCESS_AUD` are set it stops accepting
+`ADMIN_TOKEN` for `/admin/*` and `/` entirely — there's no bare-header trust
+and no bypass via the `*.workers.dev` URL:
 
 1. **App A — protect the console.** Add application → Self-hosted.
    - Subdomain `picket`, domain `souspike.com.br`, **path blank** (whole host).
    - Policy: *Allow*, Include → Emails → `pedrohardware@gmail.com`.
    - Identity: Google (configure once under Zero Trust → Settings →
      Authentication), or "One-time PIN" for zero setup.
+   - Copy this app's **Audience (AUD) tag** — you'll need it below.
 2. **App B — let agents through.** Add application → Self-hosted.
    - Subdomain `picket`, domain `souspike.com.br`, **path `api/v1/report`**.
    - Policy: **Bypass**, Include → Everyone.
    - Cloudflare matches the most specific path, so agent POSTs skip Access
      while everything else stays gated. (Add a third Bypass app for path
      `healthz` if you want uptime pings unauthenticated.)
+3. In `server/wrangler.toml`, uncomment and fill:
+   ```toml
+   CF_ACCESS_TEAM_DOMAIN = "<team>.cloudflareaccess.com"
+   CF_ACCESS_AUD         = "<App A's Audience tag>"
+   ```
+   then `npx wrangler deploy`.
+4. Verify: open `https://picket.souspike.com.br/` in a private window — you
+   should hit Cloudflare's own login page (Google/PIN), then land on the
+   dashboard with no `?token=` in the URL.
+5. Once that works, set `workers_dev = false` in `wrangler.toml` and redeploy
+   — this removes the unauthenticated `*.workers.dev` URL, which Access
+   doesn't cover, closing off the last way to reach the Worker without
+   logging in. Do this last, after step 4 confirms Access itself works, so
+   there's no lockout window.
 
 With Access on, the dashboard works at plain `https://picket.souspike.com.br/`
 (no `?token=`); `picketctl` still uses `PICKET_ADMIN_TOKEN`.

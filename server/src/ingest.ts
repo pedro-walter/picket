@@ -327,12 +327,13 @@ async function maybeNotify(
   const notifyResolved = (env.NOTIFY_RESOLVED ?? 'true') === 'true';
   if (fresh.length === 0 && !(notifyResolved && resolved.length > 0)) return;
 
-  await sendReportEmail(
+  const sent = await sendReportEmail(
     env,
     agentName,
     fresh.map((x) => ({ finding: x.f, reason: x.reason })),
     notifyResolved ? resolved : [],
   );
+  if (!sent) return; // don't mark as notified — retry on the next report
 
   const stamp = nowIso();
   await flushBatch(

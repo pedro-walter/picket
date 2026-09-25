@@ -23,18 +23,23 @@ crons = ["*/15 * * * *", "0 13 * * *"]
 REPORT_INTERVAL_SECONDS = "900"
 OFFLINE_GRACE_SECONDS = "300"
 SECTION_STALE_SECONDS = "93600"    # ~26h: alert if an image/daily scan stops refreshing
-ALERT_FROM = "picket@souspike.com.br"
+ALERT_FROM = "picket@correio.souspike.com.br"
 ALERT_TO = "pedrohardware@gmail.com"
 DEFAULT_DESIRED_VERSION = "0.1.0"
 RELEASE_BASE_URL = "https://github.com/pedro-walter/picket/releases/download"
 NOTIFY_RESOLVED = "true"
 DIGEST_ALWAYS = "false"
+CF_ACCESS_TEAM_DOMAIN = "dark-meadow-05bb.cloudflareaccess.com"
+CF_ACCESS_AUD = "e696dbb85fede4a55a145b98b1dbf4e55224f9c19ba989b288495d44372de440"
 
 # Secrets (set with `wrangler secret put <NAME>`), never in this file:
 #   RESEND_API_KEY   Resend API key (re_...) for outbound mail
-#   ADMIN_TOKEN      bearer/query token guarding /admin/* and the dashboard
+#   ADMIN_TOKEN      bearer/query token guarding /admin/* and the dashboard (local-dev fallback only, now that Access is configured)
 #   TOKEN_PEPPER     extra input mixed into stored agent-token hashes
 
 [[routes]]
 pattern="picket.souspike.com.br"
 custom_domain=true
+
+[observability]
+enabled = true

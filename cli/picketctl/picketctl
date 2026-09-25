@@ -2,8 +2,11 @@
 # picketctl - admin CLI for a picket central service (Cloudflare Worker).
 #
 # Config (env, or ~/.config/picket/picketctl.env with KEY=value lines):
-#   PICKET_URL          e.g. https://picket.souspike.com.br  (or http://localhost:8787 for `wrangler dev`)
-#   PICKET_ADMIN_TOKEN  the Worker's ADMIN_TOKEN secret
+#   PICKET_URL               e.g. https://picket.souspike.com.br  (or http://localhost:8787 for `wrangler dev`)
+#   PICKET_ADMIN_TOKEN       the Worker's ADMIN_TOKEN secret (local-dev fallback; ignored once the
+#                            Worker has CF_ACCESS_TEAM_DOMAIN set, but still required here as a value)
+#   CF_ACCESS_CLIENT_ID      optional: a Cloudflare Access Service Token, for when /admin/* sits
+#   CF_ACCESS_CLIENT_SECRET  behind Access (its policy must allow this Service Token)
 #
 # Needs: sh, curl. Uses jq for pretty output if present.
 set -eu
@@ -32,6 +35,8 @@ req() {
   method="$1"; path="$2"; shift 2
   curl -fsS -X "$method" \
     -H "X-Admin-Token: $PICKET_ADMIN_TOKEN" \
+    ${CF_ACCESS_CLIENT_ID:+-H "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID"} \
+    ${CF_ACCESS_CLIENT_SECRET:+-H "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"} \
     -H "Content-Type: application/json" \
     "$@" "$BASE$path"
 }

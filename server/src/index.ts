@@ -19,7 +19,11 @@ export interface Env {
   NOTIFY_RESOLVED?: string;
   DIGEST_ALWAYS?: string;
   SECTION_STALE_SECONDS?: string;
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  CF_ACCESS_AUD?: string;
 }
+
+type AdminVars = { adminEmail?: string };
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -53,9 +57,11 @@ app.post('/api/v1/report', async (c) => {
 });
 
 // ----------------------------------------------------------------------- admin
-const admin = new Hono<{ Bindings: Env }>();
+const admin = new Hono<{ Bindings: Env; Variables: AdminVars }>();
 admin.use('*', async (c, next) => {
-  if (!authenticateAdmin(c.req.raw, c.env)) return c.json({ error: 'unauthorized' }, 401);
+  const auth = await authenticateAdmin(c.req.raw, c.env);
+  if (!auth.ok) return c.json({ error: 'unauthorized' }, 401);
+  if (auth.email) c.set('adminEmail', auth.email);
   await next();
 });
 
@@ -179,7 +185,7 @@ admin.post('/findings/:fp/mute', async (c) => {
       f.subject,
       f.identifier,
       reason,
-      c.req.header('Cf-Access-Authenticated-User-Email') ?? 'dashboard',
+      c.get('adminEmail') ?? 'dashboard',
       nowIso(),
       expires,
     ),
@@ -318,7 +324,8 @@ app.route('/admin', admin);
 
 // ------------------------------------------------------------------- dashboard
 app.get('/', async (c) => {
-  if (!authenticateAdmin(c.req.raw, c.env)) {
+  const auth = await authenticateAdmin(c.req.raw, c.env);
+  if (!auth.ok) {
     return c.text('unauthorized — put this Worker behind Cloudflare Access, or append ?token=$ADMIN_TOKEN', 401);
   }
   const token = new URL(c.req.url).searchParams.get('token') ?? '';
