@@ -41,7 +41,10 @@ Current overlays:
   by `docker inspect` (image created 2026-09-13T10:35:47-03:00, never
   rebuilt since) during the 2026-09-16 review. See
   [`docs/reviews/2026-09-13-image-cve.md`](../docs/reviews/2026-09-13-image-cve.md)
-  for the original finding list and
+  for the original finding list,
+  [`docs/reviews/2026-09-13-image-cve-soul-spike.md`](../docs/reviews/2026-09-13-image-cve-soul-spike.md)
+  for verification of the built image (fixes landed, still runs as the `hc`
+  user), and
   [`docs/reviews/2026-09-16-image-cve.md`](../docs/reviews/2026-09-16-image-cve.md)
   for what Picket found once it rescanned the overlay itself (all
   suppress, no rebuild needed yet).
