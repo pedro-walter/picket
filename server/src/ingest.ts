@@ -179,22 +179,27 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
   // one read for every reported fingerprint up front, then a single batched
   // write pass below - see D1_VARS / D1_BATCH.
   const priorStatus = new Map<string, string>();
+  const priorSeverity = new Map<string, string>();
   {
     const fps = [...reported.keys()];
     for (let i = 0; i < fps.length; i += D1_VARS) {
       const chunk = fps.slice(i, i + D1_VARS);
       const rows =
         (await env.DB.prepare(
-          `SELECT fingerprint, status FROM findings WHERE fingerprint IN (${chunk.map(() => '?').join(',')})`,
+          `SELECT fingerprint, status, severity FROM findings WHERE fingerprint IN (${chunk.map(() => '?').join(',')})`,
         )
           .bind(...chunk)
-          .all<{ fingerprint: string; status: string }>()).results ?? [];
-      for (const r of rows) priorStatus.set(r.fingerprint, r.status);
+          .all<{ fingerprint: string; status: string; severity: string }>()).results ?? [];
+      for (const r of rows) {
+        priorStatus.set(r.fingerprint, r.status);
+        priorSeverity.set(r.fingerprint, r.severity);
+      }
     }
   }
 
   const opened: FP[] = [];
   const reopened: FP[] = [];
+  const escalated: FP[] = [];
   const resolved: ResolvedItem[] = [];
   const writes: D1PreparedStatement[] = [];
 
@@ -255,12 +260,21 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
       continue;
     }
 
-    // unchanged (open / acked / still-muted): bump last_seen, refresh display
+    // unchanged (open / acked / still-muted): bump last_seen, refresh display.
+    // A worsening severity on an already-open/acked finding is still "the same
+    // finding" (same fingerprint) but deserves a fresh alert - clear its prior
+    // notification so maybeNotify treats it as fresh, without touching status.
+    const isEscalation = shouldEscalate(existing, priorSeverity.get(fp), sev);
+
     writes.push(
       env.DB.prepare(
         'UPDATE findings SET last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ? WHERE fingerprint = ?',
       ).bind(now, sev, title, detail, stateJson, fp),
     );
+    if (isEscalation) {
+      writes.push(env.DB.prepare("DELETE FROM notifications WHERE fingerprint = ? AND kind = 'alert'").bind(fp));
+      escalated.push(f);
+    }
   }
 
   // ---- resolution: stored finding whose kind has current state but is absent ----
@@ -287,7 +301,7 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
 
   await flushBatch(env, writes);
 
-  await maybeNotify(env, agent.name, opened, reopened, resolved);
+  await maybeNotify(env, agent.name, opened, reopened, escalated, resolved);
 
   const resp: ReportResponse = { ...(await selfUpdateResponse(env, agent, payload.arch)) };
   if (Object.keys(sectionsAck).length) resp.sections_ack = sectionsAck;
@@ -300,11 +314,13 @@ async function maybeNotify(
   agentName: string,
   opened: FP[],
   reopened: FP[],
+  escalated: FP[],
   resolved: ResolvedItem[],
 ): Promise<void> {
   const candidates = [
     ...opened.map((f) => ({ f, reason: 'new' as const })),
     ...reopened.map((f) => ({ f, reason: 'reopened' as const })),
+    ...escalated.map((f) => ({ f, reason: 'escalated' as const })),
   ];
 
   const alreadySent = new Set<string>();
@@ -424,6 +440,22 @@ function hostHealthFindings(agentName: string, m: Metrics): ReportedFinding[] {
   gb('mongo_data', 'mongo_data size', m.mongo_data_gb, t.mongo_data_gb);
   gb('registry_data', 'registry_data size', m.registry_data_gb, t.registry_data_gb);
   return out;
+}
+
+// Lower rank = worse. Matches the ordering dashboard.ts sorts findings by.
+const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+const severityRank = (s: string): number => SEVERITY_RANK[s.toLowerCase()] ?? 4;
+
+/**
+ * True when a still-open/acked finding's severity got worse since it was last
+ * stored - e.g. disk usage crossing from "high" to "critical" while the
+ * fingerprint (kind+subject+identifier) stays the same. Muted findings are
+ * excluded: suppression is an explicit choice to stop alerting on them.
+ */
+export function shouldEscalate(status: string | undefined, priorSeverity: string | undefined, newSeverity: string): boolean {
+  if (status !== 'open' && status !== 'acked') return false;
+  if (priorSeverity === undefined) return false;
+  return severityRank(newSeverity) < severityRank(priorSeverity);
 }
 
 function defaultTitle(f: ReportedFinding): string {

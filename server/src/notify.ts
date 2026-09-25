@@ -3,7 +3,7 @@ import type { ReportedFinding } from './suppress';
 
 export interface AlertItem {
   finding: ReportedFinding;
-  reason: 'new' | 'reopened';
+  reason: 'new' | 'reopened' | 'escalated';
 }
 
 export interface ResolvedItem {
@@ -63,7 +63,7 @@ export async function sendReportEmail(
     lines.push(`New on ${agentName}:`);
     for (const a of alerts) {
       const f = a.finding;
-      const tag = a.reason === 'reopened' ? ' (reopened)' : '';
+      const tag = a.reason === 'reopened' ? ' (reopened)' : a.reason === 'escalated' ? ' (escalated)' : '';
       lines.push(`  [${(f.severity ?? 'info').toUpperCase()}] ${f.title ?? `${f.subject} ${f.identifier}`}${tag}`);
       if (f.detail) lines.push(`      ${f.detail}`);
     }
