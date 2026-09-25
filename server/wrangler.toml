@@ -3,9 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2024-11-01"
 
 # Custom domain (picket.souspike.com.br) is attached in the Cloudflare
-# dashboard once the Worker is first deployed. workers.dev stays on for
-# `wrangler dev` / initial testing.
-workers_dev = true
+# dashboard once the Worker is first deployed. workers.dev is off — Access
+# doesn't cover it, so leaving it on would be an unauthenticated bypass of
+# the whole admin/dashboard guard.
+workers_dev = false
 
 [[d1_databases]]
 binding = "DB"
