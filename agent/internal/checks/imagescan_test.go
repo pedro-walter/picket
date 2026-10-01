@@ -184,3 +184,68 @@ func TestImageCVENoComposeImages(t *testing.T) {
 		t.Fatalf("want no findings/no error, got %v / %v", fs, err)
 	}
 }
+
+// ---- ImageTag: in-place rebuild of the pinned tag ----
+
+func rebuildRunners(local, remote string, localErr error) (docker, crane fakeRunner) {
+	docker = fakeRunner{fn: func(name string, args []string) ([]byte, error) {
+		if localErr != nil {
+			return nil, localErr
+		}
+		return []byte(`["mongo@` + local + `","other/x@sha256:zzz"]`), nil
+	}}
+	crane = fakeRunner{fn: func(name string, args []string) ([]byte, error) {
+		if args[0] == "ls" {
+			return []byte("8.3\n8.3.11\n"), nil
+		}
+		if len(args) > 1 && args[1] == "--platform" {
+			return []byte("sha256:same"), nil // 8.3 vs 8.3.11 floating -> no newer-tag
+		}
+		return []byte(remote), nil
+	}}
+	return
+}
+
+func TestImageTagRebuiltInPlace(t *testing.T) {
+	compose := writeCompose(t, "services:\n  db:\n    image: mongo:8.3\n  w:\n    image: nginx:latest\n")
+	docker, crane := rebuildRunners("sha256:old", "sha256:new", nil)
+	// nginx:latest has no local copy digest for repo nginx -> skipped; only mongo reports.
+	fs, err := (ImageTag{ComposeFiles: []string{compose}, Crane: crane, Docker: docker}).Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(fs) != 1 || fs[0].Subject != "mongo" || fs[0].Identifier != "8.3->rebuilt" {
+		t.Fatalf("want one mongo 8.3->rebuilt finding, got %+v", fs)
+	}
+}
+
+func TestImageTagRebuiltCoversLatest(t *testing.T) {
+	compose := writeCompose(t, "services:\n  j:\n    image: lscr.io/linuxserver/jellyfin:latest\n")
+	docker := fakeRunner{fn: func(string, []string) ([]byte, error) {
+		return []byte(`["lscr.io/linuxserver/jellyfin@sha256:old"]`), nil
+	}}
+	crane := fakeRunner{fn: func(string, []string) ([]byte, error) { return []byte("sha256:new"), nil }}
+	fs, err := (ImageTag{ComposeFiles: []string{compose}, Crane: crane, Docker: docker}).Scan(context.Background())
+	if err != nil || len(fs) != 1 || fs[0].Identifier != "latest->rebuilt" {
+		t.Fatalf("got %+v, %v", fs, err)
+	}
+}
+
+func TestImageTagRebuiltQuietCases(t *testing.T) {
+	compose := writeCompose(t, "services:\n  db:\n    image: mongo:8.3\n")
+	// up to date
+	d, c := rebuildRunners("sha256:same", "sha256:same", nil)
+	if fs, err := (ImageTag{ComposeFiles: []string{compose}, Crane: c, Docker: d}).Scan(context.Background()); err != nil || len(fs) != 0 {
+		t.Errorf("up to date: got %+v, %v", fs, err)
+	}
+	// not pulled on this host
+	d, c = rebuildRunners("", "sha256:new", os.ErrNotExist)
+	if fs, err := (ImageTag{ComposeFiles: []string{compose}, Crane: c, Docker: d}).Scan(context.Background()); err != nil || len(fs) != 0 {
+		t.Errorf("not pulled: got %+v, %v", fs, err)
+	}
+	// no Docker runner configured
+	_, c = rebuildRunners("", "sha256:new", nil)
+	if fs, err := (ImageTag{ComposeFiles: []string{compose}, Crane: c}).Scan(context.Background()); err != nil || len(fs) != 0 {
+		t.Errorf("no docker: got %+v, %v", fs, err)
+	}
+}

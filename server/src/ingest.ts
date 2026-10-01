@@ -463,7 +463,9 @@ function defaultTitle(f: ReportedFinding): string {
     case 'image-cve':
       return `${f.subject}: ${f.identifier}`;
     case 'image-tag':
-      return `${f.subject}: newer tag available (${f.identifier})`;
+      return f.identifier.endsWith('->rebuilt')
+        ? `${f.subject}: pinned tag rebuilt upstream (${f.identifier})`
+        : `${f.subject}: newer tag available (${f.identifier})`;
     case 'apt':
       return `apt: ${f.identifier || 'updates pending'}`;
     case 'reboot':

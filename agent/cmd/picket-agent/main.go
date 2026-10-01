@@ -139,7 +139,7 @@ func buildSections(cfg *config.Config, stateDir string) []scheduler.SectionSpec 
 			Prepare:  ensureTools,
 			Checks: map[string]scheduler.CheckFunc{
 				"image-cve": checks.ImageCVE{ComposeFiles: cfg.ComposeFiles, Trivy: exec}.Scan,
-				"image-tag": checks.ImageTag{ComposeFiles: cfg.ComposeFiles, Crane: exec}.Scan,
+				"image-tag": checks.ImageTag{ComposeFiles: cfg.ComposeFiles, Crane: exec, Docker: exec}.Scan,
 			},
 		})
 	}
