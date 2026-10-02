@@ -52,6 +52,22 @@ Current overlays:
   `deb13u3` point release — see
   [`docs/reviews/2026-09-30-image-cve.md`](../docs/reviews/2026-09-30-image-cve.md).
 
+## Declare the overlay's lineage (so suppression decisions carry over)
+
+Pointing a compose file at `docker.souspike.com.br/<name>:<version>` changes Picket's finding *subject* to
+`docker.souspike.com.br/<name>`. Rules written for the upstream subject don't see it until the relationship is
+declared (once per overlay, not per version):
+
+```sh
+cd cli/picketctl
+./picketctl lineage sync ../../custom-docker            # preview: what would be muted / reopened
+./picketctl lineage sync ../../custom-docker --apply
+```
+
+`sync` derives the pair from each `<name>/Dockerfile` (`FROM <repo>:${BASE_TAG}` -> `<repo>`). Only rules
+that opted in (`--inherit unfixed|all`) are inherited; see
+[`../docs/architecture.md`](../docs/architecture.md#suppression-rules-and-image-lineage).
+
 ## Why upstream freshness can't be automatic once an overlay exists
 
 Once an image is overlaid and pinned to `docker.souspike.com.br/<name>:<version>`,
