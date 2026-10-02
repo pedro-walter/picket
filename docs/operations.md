@@ -66,7 +66,27 @@ and `0 13 * * *` (daily digest). Test locally with
 
 Apply on deploy: `npx wrangler d1 migrations apply picket --remote`.
 Current: `0001_init`, `0002_agent_sections` (hash-gated reports),
-`0003_releases` (self-update artifact registry).
+`0003_releases` (self-update artifact registry), `0004_lineage` (image lineage +
+`suppressions.inherit`; additive, safe for a rolled-back Worker).
+
+## Rules, lineage and the review loop
+
+```sh
+./picketctl rules add --kind image-cve --subject healthchecks/healthchecks --identifier '*|libncursesw6' \
+  --reason "no fix published as of 2026-10-02" --expires 2027-01-01T00:00:00Z --inherit unfixed
+./picketctl rules patch <id> --inherit all --expires 2027-01-01T00:00:00Z   # re-scope / re-date a live rule
+./picketctl rules audit                       # per rule: matches (direct/inherited), dead, expired, no_expiry, twin_id
+./picketctl lineage pairs ../../custom-docker # overlay<TAB>upstream parsed from the Dockerfiles, local only
+./picketctl lineage sync ../../custom-docker  # PREVIEW: which findings would flip muted<->open
+./picketctl lineage sync ../../custom-docker --apply
+./picketctl lineage add <overlay> <upstream> [--apply]   # for an image with no overlay Dockerfile
+./picketctl lineage rm <overlay> [--apply]
+```
+
+`lineage add|rm|sync` never write without `--apply`. Deleting or patching a rule, or changing lineage, reopens
+findings that lost their rule immediately (alerting once) instead of whenever the next scan body arrives.
+The first `*/15` cron after deploying the sweep also reopens any finding still `muted` whose rule was deleted
+before the sweep existed.
 
 ## Cutting an agent release
 

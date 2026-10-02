@@ -12,9 +12,10 @@ replaces staring at `picketctl findings` by hand and reasoning about each
 CVE individually — the same reasoning done ad hoc after the first
 `monitoria-soul-spike` scan (2026-09-13, 113 findings).
 
-**Contract.** For suppression rules and compose files this is read-only:
-the skill produces a report and a block of ready-to-run `picketctl rules
-add` commands, and never runs them or edits a compose file itself — those
+**Contract.** For suppression rules, image lineage and compose files this is
+read-only: the skill produces a report and a block of ready-to-run
+`picketctl rules add` / `picketctl lineage ...` commands, and never runs
+them or edits a compose file itself — those
 are for the user to execute after reading the report. For a "custom
 rebuild" (category B below) it's allowed to go further and actually build
 the thing: writing a real `custom-docker/<name>/Dockerfile` and running
@@ -55,7 +56,20 @@ Also pull `image-tag` findings (same call, filter `kind=="image-tag"`) and
 existing suppression rules (`./picketctl rules list`) — `findings
 --status open` already excludes anything `muted`, so nothing here re-treads
 a suppression that's already in force; the rules list is just useful
-context for phrasing a *new* rule consistently with existing ones.
+context for phrasing a *new* rule consistently with existing ones. Also
+read `./picketctl lineage list` (which overlay subjects are already declared
+as derived from which upstream) and `./picketctl rules audit` (per rule: what
+it matches now, dead / expired / no-expiry, and its overlay `twin_id`).
+
+**Subjects and lineage.** A finding's subject is the repo from the compose
+`image:`. An overlay (`docker.souspike.com.br/<name>`) has a different subject
+from its upstream, so upstream rules only reach it if (a) a lineage edge
+declares the overlay derived from that upstream and (b) the rule was written
+with `--inherit unfixed|all`. When reviewing an overlay's findings, look for
+the upstream's rules first; a finding that is open only because a rule lacks
+`--inherit` is a rule to re-scope (`picketctl rules patch <id> --inherit ...`),
+not a new decision. Findings muted through lineage show `suppressed_via` in
+`state_json`.
 
 ## Step 2 — Per-image context (no SSH, no compose greps)
 
@@ -167,6 +181,13 @@ for the pattern — same idea as `souspike/custom-docker`, one shared
    claim an image was pushed unless the script actually reported success.
 4. List the new overlay in `custom-docker/README.md`'s "Current overlays"
    section, same as `souspike/custom-docker` tracks its own.
+5. Put the lineage command in the report (print it, don't run it) the first
+   time an overlay exists for an image, so the upstream's suppression
+   decisions can follow it:
+   `./picketctl lineage add docker.souspike.com.br/<name> <repo>` (preview;
+   the user adds `--apply` after reading which findings would flip), or
+   `./picketctl lineage sync ../../custom-docker`. One edge per overlay, not
+   per version.
 
 Flag it explicitly as a stopgap in the report — drop the overlay the
 moment upstream publishes a tag that already includes the fix — and note
@@ -180,7 +201,16 @@ pinned" and let the user place it — the skill never edits a compose file).
 concrete evidence — not an assumption from the package name — that the
 package is unused at runtime in this container (state the evidence in the
 reason). Every suppression rule gets `--expires` ~90 days out; there is no
-permanent, unreviewed ignore here. Write `--reason` as the actual
+permanent, unreviewed ignore here. Every rule also gets an explicit
+`--inherit` so the decision keeps applying to overlays of the image:
+
+- `--inherit unfixed` for "no fix published yet" reasons. It stops covering an
+  overlay's finding the moment a fix exists, so an overlay that could patch the
+  package is never silenced by it.
+- `--inherit all` only for reachability reasons you can evidence (pip-vendored
+  copy, helper binary that never runs the vulnerable path), where a published
+  fix doesn't change the answer.
+- omit it (`none`) for a one-off decision that is really about this exact image. Write `--reason` as the actual
 justification a future reader (including next week's you) can check —
 "no fix published yet for CVE-2026-56862 in postgres's bundled Go runtime
 as of 2026-09-13" is a reason; "low risk" alone is not.
@@ -221,7 +251,7 @@ the script didn't run or failed.
 **Suppress (90d, re-review next pass):**
 ​```sh
 ./picketctl rules add --kind image-cve --subject healthchecks/healthchecks \
-  --identifier '*|<pkg>' --cve <CVE> --reason "..." --expires <date+90d>
+  --identifier '*|<pkg>' --cve <CVE> --reason "..." --expires <date+90d> --inherit unfixed
 ​```
 ```
 
@@ -235,7 +265,7 @@ Print the report path and the summary counts in your reply, and for each
 category-B image whether its overlay actually got built+pushed or only
 committed as a Dockerfile (say which, and if only committed, give the
 exact `build-and-push.sh` command to finish it). Do not run any of the
-printed `picketctl rules add` commands, and do not edit any compose file —
+printed `picketctl rules add` / `picketctl lineage` commands, and do not edit any compose file —
 those stay for the user to execute after reading the report. Applying a
 suppression is a judgment call about the team's own risk tolerance; a
 custom rebuild's actual construction isn't (it's mechanical once the

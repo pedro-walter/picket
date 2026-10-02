@@ -92,7 +92,31 @@ repo (`postgres`), never the pinned tag. This is the property the old
 | open, still present | seen again in a later report | no (bump `last_seen`) |
 | → resolved | absent from a report that carried current state for its kind (cheap `checks_run`, or a section body) | optional |
 | resolved → open | reappears | yes |
-| muted → open | its suppression rule removed/expired | yes |
+| muted → open | its suppression rule removed/expired, or the lineage edge it relied on removed | yes (the `*/15` cron sweep and rule/lineage admin calls reopen it; no wait for a scan body) |
+
+## Suppression rules and image lineage
+
+A rule is `(kind, subject_glob, identifier_glob, cve_glob)` plus `reason`, `expires_at` and `inherit`.
+Matching is on the finding's own subject unless the rule opts in to lineage.
+
+`image_lineage` (`subject` -> `upstream`) declares that an image is derived from another, e.g. the overlay
+`docker.souspike.com.br/healthchecks/healthchecks` from `healthchecks/healthchecks`. It is only read at
+match time; fingerprints and subjects never change. A rule with `inherit != none` also matches a finding whose
+**ancestor** subject matches its `subject_glob` (transitive, depth 5, cycle-rejected). Descendants inherit from
+ancestors, never the reverse.
+
+| `inherit` | reaches overlays | use for |
+|---|---|---|
+| `none` (default) | no | everything pre-existing, one-off mutes |
+| `unfixed` | only while the finding has no published fix (`fixed_version`, else `-> fixed in` in `detail`) | "no fix exists yet" decisions: an overlay that could patch the package is not silenced |
+| `all` | yes, fix or not | reachability decisions with evidence (pip-vendored copies, unused binaries) |
+
+The matched rule's id lands in `findings.state_json.suppressed_by` (so reason/author/expiry stay those of the
+original decision) and the ancestor it matched through in `suppressed_via`.
+
+`reevaluateFindings` (`server/src/lineage.ts`) re-applies rules + lineage to stored findings: after rule
+delete/patch, lineage add/remove, and every `*/15` cron. Ingest only re-diffs findings in a report body and
+hash-gated sections rarely send one, so without it an expired rule would keep findings muted.
 
 ## Auth
 
