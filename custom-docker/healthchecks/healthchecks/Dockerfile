@@ -16,6 +16,11 @@
 # there); re-check with `docker run --rm healthchecks/healthchecks:v4.4
 # id hc` if this fails to start after the bump.
 #
+# 4.4-2 (2026-09-30 review): second pass adds the libssl3t64/openssl/
+# openssl-provider-legacy deb13u3 point release (already in the apt list
+# above, picked up by a rebuild) plus PyJWT (>=2.14.0) and urllib3 (>=2.8.0)
+# via pip. v4.4 is still upstream's newest tag (Docker Hub, 2026-09-30).
+#
 # Bump BASE_TAG when upstream cuts a release past v4.4; re-run
 # /picket-review afterward to see whether this override is still needed.
 ARG BASE_TAG=v4.4
@@ -29,5 +34,5 @@ RUN printf 'Types: deb\nURIs: http://deb.debian.org/debian\nSuites: trixie trixi
          libssl3t64 openssl openssl-provider-legacy \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir -U setuptools msgpack
+    && pip install --no-cache-dir -U setuptools msgpack PyJWT urllib3
 USER hc

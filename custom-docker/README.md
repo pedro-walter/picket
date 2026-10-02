@@ -47,7 +47,10 @@ Current overlays:
   user), and
   [`docs/reviews/2026-09-16-image-cve.md`](../docs/reviews/2026-09-16-image-cve.md)
   for what Picket found once it rescanned the overlay itself (all
-  suppress, no rebuild needed yet).
+  suppress, no rebuild needed yet). **`4.4-2`** (2026-09-30, pushed; compose
+  not yet pointed at it) adds PyJWT/urllib3 (pip) and the openssl
+  `deb13u3` point release — see
+  [`docs/reviews/2026-09-30-image-cve.md`](../docs/reviews/2026-09-30-image-cve.md).
 
 ## Why upstream freshness can't be automatic once an overlay exists
 
