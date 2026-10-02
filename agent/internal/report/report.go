@@ -30,6 +30,17 @@ type Section struct {
 	GeneratedAt string    `json:"generated_at"` // when the agent produced this scan (RFC3339)
 	ChecksRun   []string  `json:"checks_run"`   // finding kinds this section covers
 	Findings    []Finding `json:"findings,omitempty"`
+	// Scans lists the image refs and digests the section actually scanned. It
+	// rides on hash-only reports too, so central always knows what the current
+	// scan covered. Older centrals ignore it.
+	Scans []Scan `json:"scans,omitempty"`
+}
+
+// Scan is one image the section scanned: the pinned ref and the digest that
+// ref resolved to at scan time (repo digest, else the local image ID).
+type Scan struct {
+	Ref    string `json:"ref"`
+	Digest string `json:"digest,omitempty"`
 }
 
 // Finding is one problem instance. The (Kind, Subject, Identifier) triple,
@@ -44,6 +55,11 @@ type Finding struct {
 	Title      string `json:"title,omitempty"`
 	Detail     string `json:"detail,omitempty"`
 	CVE        string `json:"cve,omitempty"` // optional; else parsed from Identifier
+	// Scan provenance (image-cve). Display and rule-matching context only; none
+	// of these feed the fingerprint.
+	ImageRef     string `json:"image_ref,omitempty"`     // exact pinned ref that was scanned
+	ImageDigest  string `json:"image_digest,omitempty"`  // digest of that scan
+	FixedVersion string `json:"fixed_version,omitempty"` // published fix, if any
 }
 
 // Metrics is the host-health sample; central keeps the last N and evaluates

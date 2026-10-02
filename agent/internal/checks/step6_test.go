@@ -105,6 +105,8 @@ func TestContainersDetectsStale(t *testing.T) {
 		switch {
 		case args[0] == "version":
 			return []byte("27.1.1"), nil
+		case args[0] == "inspect" && args[2] == "{{.Config.Image}}":
+			return []byte("myrepo/api:1.4\n"), nil // created from the same ref as the pin
 		case args[0] == "inspect" && args[len(args)-1] == "api":
 			return []byte("sha256:aaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
 		case args[0] == "inspect" && args[len(args)-1] == "db":
@@ -122,6 +124,34 @@ func TestContainersDetectsStale(t *testing.T) {
 	}
 	if !strings.Contains(fs[0].Detail, "aaaaaaaaaaaa") || !strings.Contains(fs[0].Detail, "bbbbbbbbbbbb") {
 		t.Errorf("detail missing short ids: %q", fs[0].Detail)
+	}
+}
+
+// The 2026-09-30 case: host pulled 4.4-2, container still on 4.4-1. The detail
+// must say so rather than look like a CVE regression.
+func TestContainersDetailNamesConfiguredImage(t *testing.T) {
+	compose := writeCompose(t, "services:\n  hc:\n    container_name: hc\n    image: reg.example/hc:4.4-2\n")
+	docker := fakeRunner{fn: func(_ string, args []string) ([]byte, error) {
+		switch {
+		case args[0] == "version":
+			return []byte("27.1.1"), nil
+		case args[0] == "inspect" && args[2] == "{{.Config.Image}}":
+			return []byte("reg.example/hc:4.4-1\n"), nil
+		case args[0] == "inspect":
+			return []byte("sha256:aaaaaaaaaaaaaaaaaaaaaaaa\n"), nil
+		case args[0] == "image":
+			return []byte("sha256:bbbbbbbbbbbbbbbbbbbbbbbb\n"), nil
+		}
+		return nil, errors.New("no such object")
+	}}
+	fs := mustScan(t, (Containers{ComposeFiles: []string{compose}, Docker: docker}).Scan)
+	if len(fs) != 1 {
+		t.Fatalf("want 1 finding, got %+v", fs)
+	}
+	for _, want := range []string{"pins reg.example/hc:4.4-2", "created from reg.example/hc:4.4-1", "aaaaaaaaaaaa", "bbbbbbbbbbbb"} {
+		if !strings.Contains(fs[0].Detail, want) {
+			t.Errorf("detail %q missing %q", fs[0].Detail, want)
+		}
 	}
 }
 

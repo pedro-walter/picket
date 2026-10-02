@@ -18,6 +18,7 @@ import (
 
 	"github.com/pedro-walter/picket/agent/internal/checks"
 	"github.com/pedro-walter/picket/agent/internal/client"
+	"github.com/pedro-walter/picket/agent/internal/compose"
 	"github.com/pedro-walter/picket/agent/internal/config"
 	"github.com/pedro-walter/picket/agent/internal/report"
 	"github.com/pedro-walter/picket/agent/internal/scheduler"
@@ -133,12 +134,16 @@ func buildSections(cfg *config.Config, stateDir string) []scheduler.SectionSpec 
 
 	if len(cfg.ComposeFiles) > 0 {
 		exec := toolexec.OS{BinDir: binDir, Timeout: 10 * time.Minute}
+		cve := &checks.ImageCVE{ComposeFiles: cfg.ComposeFiles, Trivy: exec}
 		out = append(out, scheduler.SectionSpec{
 			Name:     "image-scan",
 			Interval: cfg.ImageScanInterval.Duration,
 			Prepare:  ensureTools,
+			// a changed set of pinned refs rescans now instead of at the next tick
+			Inputs: func() (string, error) { return compose.InputsDigest(cfg.ComposeFiles) },
+			Scans:  cve.Scans,
 			Checks: map[string]scheduler.CheckFunc{
-				"image-cve": checks.ImageCVE{ComposeFiles: cfg.ComposeFiles, Trivy: exec}.Scan,
+				"image-cve": cve.Scan,
 				"image-tag": checks.ImageTag{ComposeFiles: cfg.ComposeFiles, Crane: exec, Docker: exec}.Scan,
 			},
 		})

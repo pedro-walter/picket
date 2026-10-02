@@ -51,11 +51,23 @@ func (c Containers) Scan(ctx context.Context) ([]report.Finding, error) {
 			Identifier: s.Image,
 			Severity:   "medium",
 			Title:      Hostname() + ": " + s.Name + " running a stale image",
-			Detail: fmt.Sprintf("%s: container is on %s, the local tag now resolves to %s (recreate to pick it up)",
-				s.Image, short(running), short(local)),
+			Detail:     c.detail(ctx, s, running, local),
 		})
 	}
 	return findings, nil
+}
+
+// detail spells out the mismatch: what the container was created from versus
+// what the compose pin resolves to now. "Host pulled 4.4-2, container still on
+// 4.4-1" must read as exactly that, not as a CVE regression.
+func (c Containers) detail(ctx context.Context, s compose.Service, running, local string) string {
+	tail := fmt.Sprintf("the local tag now resolves to %s (recreate to pick it up)", short(local))
+	cfg, err := c.id(ctx, "inspect", "--format", "{{.Config.Image}}", s.Name)
+	if err != nil || cfg == "" || cfg == s.Image {
+		return fmt.Sprintf("%s: container is on image %s, %s", s.Image, short(running), tail)
+	}
+	return fmt.Sprintf("compose pins %s; container was created from %s (image %s), %s",
+		s.Image, cfg, short(running), tail)
 }
 
 func (c Containers) id(ctx context.Context, args ...string) (string, error) {

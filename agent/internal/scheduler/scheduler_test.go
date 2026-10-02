@@ -362,3 +362,132 @@ func TestMaybeSelfUpdateSkippedOutsideWindow(t *testing.T) {
 		t.Errorf("updater should not run outside the window, called %d", fu.called)
 	}
 }
+
+// ---- input-change rescans ----
+
+// inputsSection is an image-scan whose result depends on a mutable "ref".
+func inputsSection(ref *string, calls *int, ackedRefs *[]string) SectionSpec {
+	return SectionSpec{
+		Name:     "image-scan",
+		Interval: 12 * time.Hour,
+		Inputs:   func() (string, error) { return *ref, nil },
+		Scans:    func() []report.Scan { return []report.Scan{{Ref: *ref, Digest: "sha256:d"}} },
+		Checks: map[string]CheckFunc{
+			"image-cve": func(context.Context) ([]report.Finding, error) {
+				*calls++
+				// same finding set whatever the ref: only the scan provenance moves
+				return []report.Finding{{Kind: "image-cve", Subject: "hc", Identifier: "CVE-1|x", Severity: "high"}}, nil
+			},
+		},
+	}
+}
+
+func TestInputsChangeTriggersRescanAndNewBody(t *testing.T) {
+	fc := newFakeCentral(t)
+	fc.respond = func(p report.Payload) report.Response {
+		ack := map[string]string{}
+		for name, sec := range p.Sections {
+			if sec.Findings != nil {
+				ack[name] = sec.Hash
+			}
+		}
+		return report.Response{OK: true, SectionsAck: ack}
+	}
+	ref, calls := "hc:4.4-1", 0
+	r := testRunner(t, fc.srv.URL, map[string]CheckFunc{}, []SectionSpec{inputsSection(&ref, &calls, nil)})
+	ctx := context.Background()
+
+	if err := r.Oneshot(ctx); err != nil { // scan + body
+		t.Fatal(err)
+	}
+	if r.rescanChanged(ctx) {
+		t.Fatal("unchanged inputs must not rescan")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if err := r.cheapCycle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if fc.last().Sections["image-scan"].Findings != nil {
+		t.Fatal("acked section should be hash-only")
+	}
+	oldHash := fc.last().Sections["image-scan"].Hash
+
+	ref = "hc:4.4-2" // compose repointed
+	if !r.rescanChanged(ctx) {
+		t.Fatal("changed inputs must rescan")
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if err := r.cheapCycle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sec := fc.last().Sections["image-scan"]
+	if sec.Hash == oldHash {
+		t.Error("identical finding set but new ref must still change the hash")
+	}
+	if sec.Findings == nil {
+		t.Error("new hash must carry a body")
+	}
+	if len(sec.Scans) != 1 || sec.Scans[0].Ref != "hc:4.4-2" {
+		t.Errorf("scans = %+v", sec.Scans)
+	}
+	if r.rescanChanged(ctx) {
+		t.Error("rescan should settle once inputs match")
+	}
+}
+
+func TestLegacyStateWithoutInputsRescansOnce(t *testing.T) {
+	ref, calls := "hc:4.4-1", 0
+	r := testRunner(t, "http://unused", map[string]CheckFunc{}, []SectionSpec{inputsSection(&ref, &calls, nil)})
+	st := &stateFile{Sections: map[string]sectionState{"image-scan": {Hash: "h", GeneratedAt: time.Now(), Kinds: []string{"image-cve"}}}}
+	r.mu.Lock()
+	_ = r.writeState(st)
+	r.mu.Unlock()
+	if !r.rescanChanged(context.Background()) || calls != 1 {
+		t.Fatalf("legacy cache should rescan once (calls=%d)", calls)
+	}
+	if r.rescanChanged(context.Background()) {
+		t.Fatal("second pass should be quiet")
+	}
+}
+
+func TestFailedRescanBacksOff(t *testing.T) {
+	ref, calls := "hc:bad", 0
+	spec := inputsSection(&ref, &calls, nil)
+	spec.Checks["image-cve"] = func(context.Context) ([]report.Finding, error) {
+		calls++
+		return nil, errors.New("trivy: manifest unknown")
+	}
+	r := testRunner(t, "http://unused", map[string]CheckFunc{}, []SectionSpec{spec})
+	ctx := context.Background()
+	r.rescanChanged(ctx)
+	r.rescanChanged(ctx)
+	r.rescanChanged(ctx)
+	if calls != 1 {
+		t.Errorf("a failing ref was scanned %d times within the retry window, want 1", calls)
+	}
+	r.RescanRetry = time.Nanosecond
+	time.Sleep(time.Millisecond)
+	r.rescanChanged(ctx)
+	if calls != 2 {
+		t.Errorf("retry after the window: calls = %d, want 2", calls)
+	}
+}
+
+func TestSectionStaleOnInputsChange(t *testing.T) {
+	ref, calls := "hc:4.4-1", 0
+	r := testRunner(t, "http://unused", map[string]CheckFunc{}, []SectionSpec{inputsSection(&ref, &calls, nil)})
+	if err := r.sectionCycle(context.Background(), r.Sections[0]); err != nil {
+		t.Fatal(err)
+	}
+	if r.sectionStale(r.Sections[0]) {
+		t.Fatal("fresh scan with same inputs is not stale")
+	}
+	ref = "hc:4.4-2"
+	if !r.sectionStale(r.Sections[0]) {
+		t.Fatal("changed inputs make a fresh scan stale (restart path)")
+	}
+}

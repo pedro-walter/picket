@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/pedro-walter/picket/agent/internal/compose"
 	"github.com/pedro-walter/picket/agent/internal/report"
@@ -19,9 +20,23 @@ import (
 type ImageCVE struct {
 	ComposeFiles []string
 	Trivy        toolexec.Runner
+
+	mu    sync.Mutex
+	scans []report.Scan
+}
+
+// Scans returns the refs and digests covered by the last fully successful Scan.
+func (c *ImageCVE) Scans() []report.Scan {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]report.Scan(nil), c.scans...)
 }
 
 type trivyReport struct {
+	Metadata struct {
+		ImageID     string   `json:"ImageID"`
+		RepoDigests []string `json:"RepoDigests"`
+	} `json:"Metadata"`
 	Results []struct {
 		Target          string `json:"Target"`
 		Type            string `json:"Type"`
@@ -37,40 +52,57 @@ type trivyReport struct {
 	} `json:"Results"`
 }
 
-func (c ImageCVE) Scan(ctx context.Context) ([]report.Finding, error) {
+func (c *ImageCVE) Scan(ctx context.Context) ([]report.Finding, error) {
 	imgs, err := compose.WatchedImages(c.ComposeFiles)
 	if err != nil {
 		return nil, err
 	}
 
 	var findings []report.Finding
+	var scans []report.Scan
 	var errs error
 	for _, img := range imgs {
-		fs, err := c.scanOne(ctx, img)
+		fs, scan, err := c.scanOne(ctx, img)
 		if err != nil {
 			errs = errors.Join(errs, fmt.Errorf("%s: %w", img.Ref, err))
 			continue
 		}
 		findings = append(findings, fs...)
+		scans = append(scans, scan)
 	}
 	if errs != nil {
 		return nil, errs // drop the whole kind so central does not resolve on partial data
 	}
+	c.mu.Lock()
+	c.scans = scans
+	c.mu.Unlock()
 	return findings, nil
 }
 
-func (c ImageCVE) scanOne(ctx context.Context, img compose.Image) ([]report.Finding, error) {
+// digestOf prefers the registry digest of the scanned image; a locally built
+// image has none, so fall back to its image ID.
+func digestOf(repoDigests []string, imageID string) string {
+	for _, d := range repoDigests {
+		if i := strings.LastIndexByte(d, '@'); i >= 0 {
+			return d[i+1:]
+		}
+	}
+	return imageID
+}
+
+func (c *ImageCVE) scanOne(ctx context.Context, img compose.Image) ([]report.Finding, report.Scan, error) {
 	out, err := c.Trivy.Run(ctx, "trivy", "image",
 		"--scanners", "vuln", "--severity", "HIGH,CRITICAL",
 		"--format", "json", "--quiet", img.Ref)
 	if err != nil {
-		return nil, err
+		return nil, report.Scan{}, err
 	}
 
 	var tr trivyReport
 	if err := json.Unmarshal(out, &tr); err != nil {
-		return nil, fmt.Errorf("parsing trivy json: %w", err)
+		return nil, report.Scan{}, fmt.Errorf("parsing trivy json: %w", err)
 	}
+	scan := report.Scan{Ref: img.Ref, Digest: digestOf(tr.Metadata.RepoDigests, tr.Metadata.ImageID)}
 
 	seen := map[string]bool{}
 	var findings []report.Finding
@@ -101,8 +133,12 @@ func (c ImageCVE) scanOne(ctx context.Context, img compose.Image) ([]report.Find
 				Title:      img.Repo + ": " + v.VulnerabilityID + " in " + v.PkgName,
 				Detail:     detail,
 				CVE:        v.VulnerabilityID,
+
+				ImageRef:     scan.Ref,
+				ImageDigest:  scan.Digest,
+				FixedVersion: v.FixedVersion,
 			})
 		}
 	}
-	return findings, nil
+	return findings, scan, nil
 }

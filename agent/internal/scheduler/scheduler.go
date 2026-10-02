@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pedro-walter/picket/agent/internal/client"
@@ -53,6 +54,16 @@ type SectionSpec struct {
 	Interval time.Duration
 	Prepare  func(context.Context) error // optional; runs before Checks each cycle (e.g. tool refresh)
 	Checks   map[string]CheckFunc        // finding kind -> check
+
+	// Inputs, if set, returns a cheap digest of what the section scans (no
+	// network). When it differs from the digest the cached scan was made with,
+	// the section is rescanned at the next cheap cycle instead of waiting for
+	// its Interval.
+	Inputs func() (string, error)
+	// Scans, if set, reports the images the last successful scan covered. They
+	// are part of the section hash, so a changed ref or digest always sends a
+	// body even when the finding set is identical.
+	Scans func() []report.Scan
 }
 
 type Runner struct {
@@ -70,7 +81,19 @@ type Runner struct {
 
 	StatePath string // JSON file holding the per-section cache + ack state
 
-	mu sync.Mutex // serialises state-file access across cheap + section goroutines
+	mu    sync.Mutex // serialises state-file access across cheap + section goroutines
+	scan  sync.Mutex // one section scan at a time (ticker and input-change rescans)
+	busy  atomic.Bool
+	tried map[string]attempt // section -> last input-triggered rescan (in memory only)
+
+	// RescanRetry is the minimum gap before an input-triggered rescan is
+	// retried for the same inputs after it failed. Zero means one hour.
+	RescanRetry time.Duration
+}
+
+type attempt struct {
+	inputs string
+	at     time.Time
 }
 
 // sectionState is what the agent persists per section between runs.
@@ -79,7 +102,9 @@ type sectionState struct {
 	GeneratedAt time.Time        `json:"generated_at"` // when this scan was produced
 	Kinds       []string         `json:"kinds"`
 	Findings    []report.Finding `json:"findings"`
-	AckedHash   string           `json:"acked_hash"` // hash central last confirmed the body for
+	AckedHash   string           `json:"acked_hash"`       // hash central last confirmed the body for
+	Inputs      string           `json:"inputs,omitempty"` // Spec.Inputs digest the scan was made with
+	Scans       []report.Scan    `json:"scans,omitempty"`  // images the scan covered
 }
 
 type stateFile struct {
@@ -148,6 +173,94 @@ func (r *Runner) Oneshot(ctx context.Context) error {
 	return r.cheapCycle(ctx)
 }
 
+// rescanInBackground rescans sections whose inputs changed without blocking
+// the host report (a trivy run takes minutes), then sends one extra report so
+// central gets the new body now rather than a full cheap interval later.
+func (r *Runner) rescanInBackground(ctx context.Context, wg *sync.WaitGroup) {
+	if !r.busy.CompareAndSwap(false, true) {
+		return // previous rescan still running
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer r.busy.Store(false)
+		if r.rescanChanged(ctx) {
+			if err := r.cheapCycle(ctx); err != nil {
+				r.Log.Error("post-rescan cheap cycle", "err", err)
+			}
+		}
+	}()
+}
+
+// rescanChanged runs every section whose Inputs digest differs from the one
+// its cached scan was made with. Returns true if any section was rescanned.
+func (r *Runner) rescanChanged(ctx context.Context) bool {
+	did := false
+	for _, s := range r.Sections {
+		cur, ok := r.changedInputs(s)
+		if !ok {
+			continue
+		}
+		if r.recentlyTried(s.Name, cur) {
+			continue
+		}
+		r.Log.Info("section inputs changed, rescanning", "section", s.Name)
+		r.markTried(s.Name, cur)
+		if err := r.sectionCycle(ctx, s); err != nil {
+			r.Log.Warn("rescan", "section", s.Name, "err", err)
+		}
+		did = true
+	}
+	return did
+}
+
+// changedInputs reports whether spec's inputs differ from its cached scan's.
+// A cached scan with no recorded inputs (written by an older agent) counts as
+// changed once, so the first run after an upgrade re-establishes provenance.
+func (r *Runner) changedInputs(spec SectionSpec) (string, bool) {
+	if spec.Inputs == nil || len(spec.Checks) == 0 {
+		return "", false
+	}
+	cur, err := spec.Inputs()
+	if err != nil {
+		return "", false // the scan would fail the same way; leave the cache alone
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	st, err := r.loadState()
+	if err != nil || st == nil {
+		return cur, true
+	}
+	s, ok := st.Sections[spec.Name]
+	if !ok {
+		return cur, true
+	}
+	return cur, s.Inputs != cur
+}
+
+func (r *Runner) recentlyTried(section, inputs string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	a, ok := r.tried[section]
+	if !ok || a.inputs != inputs {
+		return false
+	}
+	retry := r.RescanRetry
+	if retry == 0 {
+		retry = time.Hour
+	}
+	return time.Since(a.at) < retry
+}
+
+func (r *Runner) markTried(section, inputs string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.tried == nil {
+		r.tried = map[string]attempt{}
+	}
+	r.tried[section] = attempt{inputs: inputs, at: time.Now()}
+}
+
 func (r *Runner) cheapCycle(ctx context.Context) error {
 	findings, ran := run(ctx, r.Log, "cheap", r.CheapChecks)
 
@@ -166,6 +279,7 @@ func (r *Runner) cheapCycle(ctx context.Context) error {
 			Hash:        s.Hash,
 			GeneratedAt: s.GeneratedAt.UTC().Format(time.RFC3339),
 			ChecksRun:   s.Kinds,
+			Scans:       s.Scans,
 		}
 		if s.Hash != s.AckedHash {
 			sec.Findings = s.Findings // central does not have this body yet
@@ -255,6 +369,14 @@ func (r *Runner) sectionCycle(ctx context.Context, spec SectionSpec) error {
 	if len(spec.Checks) == 0 {
 		return nil
 	}
+	r.scan.Lock()
+	defer r.scan.Unlock()
+	// sampled before scanning: a change that lands mid-scan differs from this
+	// and triggers another rescan rather than being silently absorbed.
+	var inputs string
+	if spec.Inputs != nil {
+		inputs, _ = spec.Inputs()
+	}
 	if spec.Prepare != nil {
 		if err := spec.Prepare(ctx); err != nil {
 			// non-fatal: individual checks will still error if a tool is truly missing
@@ -270,7 +392,11 @@ func (r *Runner) sectionCycle(ctx context.Context, spec SectionSpec) error {
 	}
 	kinds := dedupe(ran)
 	sortFindings(findings)
-	newHash := hashSection(kinds, findings)
+	var scans []report.Scan
+	if spec.Scans != nil {
+		scans = spec.Scans()
+	}
+	newHash := hashSection(kinds, findings, scans)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -285,6 +411,8 @@ func (r *Runner) sectionCycle(ctx context.Context, spec SectionSpec) error {
 		Kinds:       kinds,
 		Findings:    findings,
 		AckedHash:   prev.AckedHash, // cheapCycle re-sends the body if the hash moved
+		Inputs:      inputs,
+		Scans:       scans,
 	}
 	r.Log.Info("section scanned", "section", spec.Name,
 		"kinds", kinds, "findings", len(findings), "changed", newHash != prev.Hash)
@@ -337,11 +465,12 @@ func run(ctx context.Context, log *slog.Logger, tier string, checks map[string]C
 	return findings, ran
 }
 
-func hashSection(kinds []string, findings []report.Finding) string {
+func hashSection(kinds []string, findings []report.Finding, scans []report.Scan) string {
 	payload := struct {
 		Kinds    []string         `json:"kinds"`
 		Findings []report.Finding `json:"findings"`
-	}{Kinds: kinds, Findings: findings}
+		Scans    []report.Scan    `json:"scans,omitempty"`
+	}{Kinds: kinds, Findings: findings, Scans: scans}
 	b, _ := json.Marshal(payload)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
@@ -371,7 +500,15 @@ func (r *Runner) sectionStale(spec SectionSpec) bool {
 	if !ok {
 		return true
 	}
-	return time.Since(s.GeneratedAt) >= spec.Interval
+	if time.Since(s.GeneratedAt) >= spec.Interval {
+		return true
+	}
+	if spec.Inputs != nil {
+		if cur, err := spec.Inputs(); err == nil && cur != s.Inputs {
+			return true
+		}
+	}
+	return false
 }
 
 // loadState / writeState assume r.mu is held by the caller.

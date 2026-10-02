@@ -134,7 +134,7 @@ func TestImageCVEParsesFindings(t *testing.T) {
 		return []byte(trivyJSON), nil
 	}}
 
-	fs, err := (ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}).Scan(context.Background())
+	fs, err := (&ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}).Scan(context.Background())
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestImageCVEParsesFindings(t *testing.T) {
 func TestImageCVETrivyFailureIsError(t *testing.T) {
 	compose := writeCompose(t, "services:\n  db:\n    image: postgres:16-alpine\n")
 	trivy := fakeRunner{fn: func(string, []string) ([]byte, error) { return nil, os.ErrDeadlineExceeded }}
-	if _, err := (ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}).Scan(context.Background()); err == nil {
+	if _, err := (&ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}).Scan(context.Background()); err == nil {
 		t.Fatal("expected error when trivy fails")
 	}
 }
@@ -179,7 +179,7 @@ func TestImageCVENoComposeImages(t *testing.T) {
 		t.Fatal("trivy should not be called - only first-party images present")
 		return nil, nil
 	}}
-	fs, err := (ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}).Scan(context.Background())
+	fs, err := (&ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}).Scan(context.Background())
 	if err != nil || len(fs) != 0 {
 		t.Fatalf("want no findings/no error, got %v / %v", fs, err)
 	}
@@ -247,5 +247,66 @@ func TestImageTagRebuiltQuietCases(t *testing.T) {
 	_, c = rebuildRunners("", "sha256:new", nil)
 	if fs, err := (ImageTag{ComposeFiles: []string{compose}, Crane: c}).Scan(context.Background()); err != nil || len(fs) != 0 {
 		t.Errorf("no docker: got %+v, %v", fs, err)
+	}
+}
+
+func TestImageCVERecordsProvenance(t *testing.T) {
+	compose := writeCompose(t, "services:\n  hc:\n    image: reg.example/hc:4.4-2\n  db:\n    image: postgres:16\n")
+	trivy := fakeRunner{fn: func(_ string, args []string) ([]byte, error) {
+		meta := `"Metadata":{"ImageID":"sha256:local1","RepoDigests":["reg.example/hc@sha256:feed"]}`
+		if args[len(args)-1] == "postgres:16" {
+			meta = `"Metadata":{"ImageID":"sha256:local2"}` // no registry digest: use the image ID
+		}
+		return []byte(`{` + meta + `,"Results":[{"Target":"t","Vulnerabilities":[
+		  {"VulnerabilityID":"CVE-1","PkgName":"PyJWT","InstalledVersion":"2.1","FixedVersion":"2.14.0","Severity":"HIGH"},
+		  {"VulnerabilityID":"CVE-2","PkgName":"libx","InstalledVersion":"1","Severity":"HIGH"}]}]}`), nil
+	}}
+	c := &ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}
+	if got := c.Scans(); len(got) != 0 {
+		t.Fatalf("scans before first scan: %+v", got)
+	}
+	fs, err := c.Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]string{}
+	for _, f := range fs {
+		by[f.Subject+"/"+f.Identifier] = f.ImageRef + " " + f.ImageDigest + " " + f.FixedVersion
+	}
+	if by["reg.example/hc/CVE-1|PyJWT"] != "reg.example/hc:4.4-2 sha256:feed 2.14.0" {
+		t.Errorf("hc fixable: %q", by["reg.example/hc/CVE-1|PyJWT"])
+	}
+	if by["reg.example/hc/CVE-2|libx"] != "reg.example/hc:4.4-2 sha256:feed " {
+		t.Errorf("hc unfixed: %q", by["reg.example/hc/CVE-2|libx"])
+	}
+	if by["postgres/CVE-2|libx"] != "postgres:16 sha256:local2 " {
+		t.Errorf("postgres falls back to image id: %q", by["postgres/CVE-2|libx"])
+	}
+	scans := c.Scans()
+	if len(scans) != 2 || scans[0].Ref != "postgres:16" || scans[1].Digest != "sha256:feed" {
+		t.Errorf("scans = %+v", scans)
+	}
+}
+
+// A failed scan must not replace the recorded scans with a partial list.
+func TestImageCVEFailureKeepsPreviousScans(t *testing.T) {
+	compose := writeCompose(t, "services:\n  db:\n    image: postgres:16\n")
+	fail := false
+	trivy := fakeRunner{fn: func(string, []string) ([]byte, error) {
+		if fail {
+			return nil, os.ErrDeadlineExceeded
+		}
+		return []byte(`{"Metadata":{"ImageID":"sha256:a"},"Results":[]}`), nil
+	}}
+	c := &ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}
+	if _, err := c.Scan(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fail = true
+	if _, err := c.Scan(context.Background()); err == nil {
+		t.Fatal("want error")
+	}
+	if got := c.Scans(); len(got) != 1 || got[0].Digest != "sha256:a" {
+		t.Errorf("scans after failure = %+v", got)
 	}
 }

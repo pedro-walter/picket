@@ -4,6 +4,8 @@ package compose
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"regexp"
 	"sort"
@@ -54,6 +56,22 @@ func WatchedImages(files []string) ([]Image, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
 	return out, nil
+}
+
+// InputsDigest is a cheap fingerprint of the watched image refs (pure file
+// parsing, no network). It is stable under reordering, comments and
+// whitespace, and changes when any ref's repo or tag does.
+func InputsDigest(files []string) (string, error) {
+	imgs, err := WatchedImages(files)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	for _, im := range imgs { // already sorted by Ref
+		h.Write([]byte(im.Ref))
+		h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func clean(s string) string {

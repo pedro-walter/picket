@@ -131,3 +131,35 @@ func TestServiceImages(t *testing.T) {
 		t.Errorf("wrong: %+v", m)
 	}
 }
+
+func TestInputsDigest(t *testing.T) {
+	write := func(body string) string {
+		f := filepath.Join(t.TempDir(), "c.yml")
+		if err := os.WriteFile(f, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	digest := func(body string) string {
+		d, err := InputsDigest([]string{write(body)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	base := digest("services:\n  a:\n    image: hc:4.4-1\n  b:\n    image: postgres:16\n")
+	// reordered, commented, quoted, with a duplicate and a first-party image: same inputs
+	same := digest("# note\nservices:\n  b:\n    image: \"postgres:16\"  # db\n  a:\n    image: hc:4.4-1\n  c:\n    image: hc:4.4-1\n  w:\n    image: docker.souspike.com.br/soul-spike-web:latest\n")
+	if base != same {
+		t.Errorf("digest should ignore order, comments, quotes, dupes, first-party")
+	}
+	if base == digest("services:\n  a:\n    image: hc:4.4-2\n  b:\n    image: postgres:16\n") {
+		t.Errorf("tag bump must change the digest")
+	}
+	if base == digest("services:\n  a:\n    image: reg.example/hc:4.4-1\n  b:\n    image: postgres:16\n") {
+		t.Errorf("repo rename must change the digest")
+	}
+	if _, err := InputsDigest([]string{"/nonexistent/compose.yml"}); err == nil {
+		t.Errorf("missing file should error")
+	}
+}
