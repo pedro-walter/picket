@@ -1,6 +1,6 @@
 # Dead suppression rules — cleanup proposal (2026-10-02)
 
-**Proposal only. Nothing here has been run.** Prepared as part of
+**Executed 2026-10-02**: all 47 `rules rm` run one at a time, each sweep returned `muted 0, reopened 0`; open (63) / muted (122) / acked (0) finding sets identical before and after. Originally a proposal; the text below is as proposed. Prepared as part of
 [`docs/plans/2026-10-02-overlay-rule-continuity-plan.md`](../plans/2026-10-02-overlay-rule-continuity-plan.md)
 (phase 1, housekeeping). Data: read-only `picketctl rules list` / `findings` against production on 2026-10-02,
 analysed locally with the same `auditRules`/`diffLineage` code the new `picketctl rules audit` and `lineage`
