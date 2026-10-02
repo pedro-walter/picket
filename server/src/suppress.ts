@@ -27,6 +27,9 @@ export interface ReportedFinding {
   cve?: string;
   /** optional structured fix version (newer agents); otherwise read off `detail` */
   fixed_version?: string;
+  /** scan provenance (agent >= 0.3.0): the pinned ref scanned and that scan's digest */
+  image_ref?: string;
+  image_digest?: string;
 }
 
 /** child subject -> upstream subject */

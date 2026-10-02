@@ -144,6 +144,25 @@ admin.get('/findings', async (c) => {
   return c.json({ findings: rows });
 });
 
+// Per agent and section: when the current scan was produced/confirmed and which
+// images (ref + digest) it covered. Lets a stale finding be told apart from a regression.
+admin.get('/scans', async (c) => {
+  const agent = c.req.query('agent');
+  const rows =
+    (await c.env.DB.prepare(
+      `SELECT a.name AS agent, a.agent_version, s.section, s.generated_at, s.confirmed_at, s.scans_json
+       FROM agent_sections s JOIN agents a ON a.id = s.agent_id` +
+        (agent ? ' WHERE a.name = ?' : '') +
+        ' ORDER BY a.name, s.section',
+    )
+      .bind(...(agent ? [agent] : []))
+      .all<{ agent: string; agent_version: string | null; section: string; generated_at: string; confirmed_at: string; scans_json: string | null }>())
+      .results ?? [];
+  return c.json({
+    scans: rows.map(({ scans_json, ...r }) => ({ ...r, images: scans_json ? JSON.parse(scans_json) : null })),
+  });
+});
+
 const findingRow = (c: { env: Env }, fp: string) =>
   c.env.DB.prepare('SELECT * FROM findings WHERE fingerprint = ?').bind(fp).first<Record<string, string>>();
 

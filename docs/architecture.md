@@ -53,6 +53,7 @@ always inline and fresh. Each lower-cadence tier rides in `sections.<name>`:
     "hash": "<sha256 of the section's canonical (kinds, findings)>",
     "generated_at": "<agent-side scan time>",
     "checks_run": ["image-cve", "image-tag"],
+    "scans": [{ "ref": "reg/hc:4.4-2", "digest": "sha256:..." }],  // agent >= 0.3.0, also on hash-only reports
     "findings": [ ... ]        // present ONLY until central acks this hash
   }
 }
@@ -70,7 +71,29 @@ always inline and fresh. Each lower-cadence tier rides in `sections.<name>`:
   full body next cycle.
 - **Resolution** of a section's kinds happens only when a body arrives (hash
   changed) and a previously-open finding is absent from it — so a CVE fixed by
-  `docker compose pull` clears on the next 12h scan, not before.
+  `docker compose pull` clears on the next scan, not before. The scan runs every
+  12h **or** as soon as the watched refs change (below).
+- **Rescan on compose change (agent >= 0.3.0).** A section may declare an
+  `Inputs` digest (for `image-scan`: the sorted `image:` refs from
+  `compose_files`, pure file parsing). Each cheap cycle compares it with the
+  digest the cached scan was made with; on a mismatch the section rescans in
+  the background and one extra report follows, so a repointed compose file
+  resolves old-ref findings and scans the new ref within ~15m + scan time
+  instead of up to 12h. A failing rescan for the same inputs is not retried for
+  an hour. A cache written by an older agent has no digest and rescans once.
+  The section hash covers the scanned `(ref, digest)` list, so a changed ref
+  or a rebuilt image always sends a body even if the finding set is identical.
+  Agents < 0.3.0 keep the 12h behaviour.
+- **Scan provenance.** `image-cve` findings carry `image_ref`, `image_digest`
+  and `fixed_version`; central stores `findings.image_ref/image_digest/
+  scanned_at` (overwritten whenever a body carries the finding, left alone by
+  cheap and hash-only cycles) and `agent_sections.scans_json`. The dashboard
+  shows a "scanned image" column (marked **stale scan** when the section stopped
+  refreshing); `picketctl scans` prints per agent and section when the scan ran
+  and which refs/digests it covered. A `container-stale` detail now reads
+  "compose pins X; container was created from Y (image …), the local tag now
+  resolves to …" so a pulled-but-not-recreated overlay is not mistaken for a
+  CVE regression.
 - **Stale detection**: the `*/15` cron flags a section whose `generated_at` is
   older than `SECTION_STALE_SECONDS` (~26h) — the heavy tier has stopped — and
   emails once, *without* resolving its findings.

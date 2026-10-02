@@ -52,6 +52,15 @@ different tags.
 jq -r '[.findings[] | select(.kind=="image-cve")] | group_by(.subject) | map({subject: .[0].subject, n: length}) | .[]' /tmp/picket-review-findings.json
 ```
 
+Image findings from agents >= 0.3.0 carry `image_ref`/`image_digest`/
+`scanned_at`. Before treating a finding as a regression, check them
+(`./picketctl scans` shows what each agent's current scan covered): a finding
+whose `image_ref` is not the compose pin, or a stale `scanned_at`, is an old
+scan that has not been replaced yet, not new exposure. A `container-stale`
+finding that says "compose pins X; container was created from Y" means the host
+pulled the new tag but never recreated the container - recommend the recreate,
+do not write rules for it.
+
 Also pull `image-tag` findings (same call, filter `kind=="image-tag"`) and
 existing suppression rules (`./picketctl rules list`) — `findings
 --status open` already excludes anything `muted`, so nothing here re-treads

@@ -67,7 +67,13 @@ and `0 13 * * *` (daily digest). Test locally with
 Apply on deploy: `npx wrangler d1 migrations apply picket --remote`.
 Current: `0001_init`, `0002_agent_sections` (hash-gated reports),
 `0003_releases` (self-update artifact registry), `0004_lineage` (image lineage +
-`suppressions.inherit`; additive, safe for a rolled-back Worker).
+`suppressions.inherit`; additive, safe for a rolled-back Worker),
+`0005_scan_provenance` (nullable `findings.image_ref/image_digest/scanned_at`,
+`agent_sections.scans_json`; additive). Deploy order: migrate, `wrangler deploy`,
+then the agent release (`release add 0.3.0`, `rollout` a canary first) - either
+side works alone, and agents < 0.3.0 simply keep the 12h rescan window.
+`./picketctl scans [--agent N]` shows which refs/digests each section's current
+scan covered.
 
 ## Rules, lineage and the review loop
 

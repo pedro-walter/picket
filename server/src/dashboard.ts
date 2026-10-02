@@ -11,12 +11,18 @@ export async function renderDashboard(env: Env, token: string): Promise<string> 
 
   const findings =
     (await env.DB.prepare(
-      `SELECT fingerprint, agent_id, kind, subject, identifier, severity, title, detail, status, first_seen, last_seen
+      `SELECT fingerprint, agent_id, kind, subject, identifier, severity, title, detail, status, first_seen, last_seen,
+              image_ref, image_digest, scanned_at, state_json
        FROM findings WHERE status IN ('open','acked','muted')
        ORDER BY CASE status WHEN 'open' THEN 0 WHEN 'acked' THEN 1 ELSE 2 END,
                 CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
                 kind`,
     ).all<Record<string, string>>()).results ?? [];
+
+  const sections =
+    (await env.DB.prepare('SELECT agent_id, section, generated_at FROM agent_sections').all<Record<string, string>>()).results ?? [];
+  const sectionAt = new Map(sections.map((s) => [`${s.agent_id}/${s.section}`, s.generated_at]));
+  const staleBefore = new Date(Date.now() - Number(env.SECTION_STALE_SECONDS || '93600') * 1000).toISOString();
 
   const names = new Map(agents.map((a) => [a.id, a.name]));
   const interval = Number(env.REPORT_INTERVAL_SECONDS || '900');
@@ -44,12 +50,27 @@ export async function renderDashboard(env: Env, token: string): Promise<string> 
             : `${f.status === 'open' ? `<form method="post" action="/admin/findings/${esc(f.fingerprint)}/ack${q}"><button>ack</button></form>` : ''}
                <form method="post" action="/admin/findings/${esc(f.fingerprint)}/mute${q}">
                  <input name="reason" placeholder="reason" required size="16"><button>mute</button></form>`;
+        // what scan this came from; a finding of a section that stopped refreshing is a stale scan, not a regression
+        const short = (f.image_digest ?? '').replace(/^sha256:/, '').slice(0, 12);
+        const scanAt = sectionAt.get(`${f.agent_id}/image-scan`);
+        const stale = f.image_ref && scanAt && scanAt < staleBefore;
+        const via = (() => {
+          try {
+            return (JSON.parse(f.state_json ?? '{}') as { suppressed_via?: string | null }).suppressed_via ?? '';
+          } catch {
+            return '';
+          }
+        })();
+        const scanned = f.image_ref
+          ? `${esc(f.image_ref)}${short ? `<br><small>@${esc(short)}</small>` : ''}${stale ? '<br><b class="bad">stale scan</b>' : ''}`
+          : '';
+        const title = via ? `${esc(f.title)} <small>(muted via ${esc(via)})</small>` : esc(f.title);
         return `<tr class="sev-${esc(f.severity)}">
           <td>${esc(f.status)}</td><td>${esc(names.get(f.agent_id) ?? f.agent_id)}</td><td>${esc(f.kind)}</td>
           <td class="sev">${esc(f.severity)}</td>
-          <td title="${esc(f.detail)}">${esc(f.title)}</td><td>${esc(f.last_seen)}</td><td>${actions}</td></tr>`;
+          <td title="${esc(f.detail)}">${title}</td><td>${scanned}</td><td>${esc(f.last_seen)}</td><td>${actions}</td></tr>`;
       })
-      .join('') || '<tr><td colspan="7">no active findings</td></tr>';
+      .join('') || '<tr><td colspan="8">no active findings</td></tr>';
 
   return `<!doctype html><meta charset="utf-8"><title>picket</title>
 <style>
@@ -67,6 +88,6 @@ export async function renderDashboard(env: Env, token: string): Promise<string> 
 <h2>agents</h2>
 <table><tr><th>name</th><th>version</th><th>bucket</th><th>last report</th></tr>${agentRows}</table>
 <h2>findings</h2>
-<table><tr><th>status</th><th>agent</th><th>kind</th><th>sev</th><th>title</th><th>last seen</th><th>actions</th></tr>${findingRows}</table>
+<table><tr><th>status</th><th>agent</th><th>kind</th><th>sev</th><th>title</th><th>scanned image</th><th>last seen</th><th>actions</th></tr>${findingRows}</table>
 `;
 }

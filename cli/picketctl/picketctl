@@ -48,7 +48,8 @@ picketctl <command> [args]
   mint-agent <name> [bucket] [notes]      create an agent; prints its token ONCE
   list-agents                             list agents + last-seen
   set-version <name> <version|null>       set desired_version (staggered rollout)
-  findings [--agent N] [--status S]       list findings
+  findings [--agent N] [--status S]       list findings (image findings show image_ref/image_digest/scanned_at)
+  scans [--agent N]                       per agent+section: when the scan ran and which image refs/digests it covered
   ack <fingerprint>                       acknowledge an open finding
   mute <fingerprint> --reason "..." [--expires ISO8601]
                                           mute (adds a finding-scoped suppression)
@@ -144,6 +145,17 @@ case "$cmd" in
       esac
     done
     req GET "/admin/findings?${qs#&}" | pretty
+    ;;
+
+  scans)
+    qs=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --agent) qs="?agent=$2"; shift 2 ;;
+        *) echo "unknown arg: $1" >&2; exit 2 ;;
+      esac
+    done
+    req GET "/admin/scans$qs" | pretty
     ;;
 
   ack)

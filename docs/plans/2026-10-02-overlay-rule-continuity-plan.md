@@ -216,6 +216,14 @@ Worker (vitest, `server/test/`):
    and the fix is small (daily cron + reopen on rule delete) and independent of the agent.
 5. OK to prepare the `rules rm` list for the 47 as a review doc; nothing executed.
 
+## Phase 2 status (2026-10-02)
+
+Implemented, not deployed: agent rescan-on-inputs-change + scan provenance + container-stale detail, migration
+`0005_scan_provenance`, `GET /admin/scans`, `picketctl scans`, dashboard column. Deviation from the draft: the
+migration is `0005` (not `0004b`), and the stale label uses the existing `SECTION_STALE_SECONDS` (~26h) instead of
+a separate "2x interval" rule, because a ref mismatch cannot persist (the scanned refs are part of the section hash,
+so any change sends a body).
+
 ## Original questions (answered above)
 
 1. Lineage source: table filled by `picketctl lineage sync` from `custom-docker/*/Dockerfile` (recommended)

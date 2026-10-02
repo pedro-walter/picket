@@ -15,6 +15,8 @@ export interface ReportSection {
   generated_at: string;
   checks_run: string[];
   findings?: ReportedFinding[];
+  /** images the section's current scan covered (agent >= 0.3.0) */
+  scans?: { ref: string; digest?: string }[];
 }
 
 export interface ReportPayload {
@@ -58,6 +60,14 @@ export interface ReportResponse extends SelfUpdateResponse {
 }
 
 type FP = ReportedFinding & { fingerprint: string };
+
+/** generated_at of the section body a finding arrived in (cheap findings have none) */
+const bodyScannedAt = new WeakMap<ReportedFinding, string>();
+
+const scansJson = (sec: ReportSection): string | null =>
+  Array.isArray(sec.scans)
+    ? JSON.stringify(sec.scans.map((s) => ({ ref: String(s.ref), digest: s.digest ? String(s.digest) : null })))
+    : null;
 
 // D1 caps bound parameters per statement near 100 and we keep each batch()
 // transaction modest; a bulk first image scan is many hundreds of findings,
@@ -131,12 +141,13 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
   for (const [name, sec] of Object.entries(payload.sections ?? {})) {
     if (Array.isArray(sec.findings)) {
       for (const k of sec.checks_run ?? []) kindsWithCurrentState.add(k);
+      for (const f of sec.findings) bodyScannedAt.set(f, sec.generated_at ?? now);
       toDiff.push(...sec.findings);
       await env.DB.prepare(
-        `INSERT OR REPLACE INTO agent_sections (agent_id, section, hash, generated_at, confirmed_at)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO agent_sections (agent_id, section, hash, generated_at, confirmed_at, scans_json)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-        .bind(agent.id, name, sec.hash, sec.generated_at ?? now, now)
+        .bind(agent.id, name, sec.hash, sec.generated_at ?? now, now, scansJson(sec))
         .run();
       sectionsAck[name] = sec.hash;
       continue;
@@ -149,12 +160,9 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
     if (stored && stored.hash === sec.hash) {
       // fresh & unchanged: refresh freshness + last_seen; no diff, no resolution
       const stmts = [
-        env.DB.prepare('UPDATE agent_sections SET confirmed_at = ?, generated_at = ? WHERE agent_id = ? AND section = ?').bind(
-          now,
-          sec.generated_at ?? now,
-          agent.id,
-          name,
-        ),
+        env.DB.prepare(
+          'UPDATE agent_sections SET confirmed_at = ?, generated_at = ?, scans_json = COALESCE(?, scans_json) WHERE agent_id = ? AND section = ?',
+        ).bind(now, sec.generated_at ?? now, scansJson(sec), agent.id, name),
       ];
       const kinds = sec.checks_run ?? [];
       if (kinds.length) {
@@ -183,6 +191,8 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
   for (const f of toDiff) {
     const fp = await sha256Hex(fingerprintInput(f.kind, agent.name, f.subject, f.identifier));
     reported.set(fp, { ...f, fingerprint: fp });
+    const sa = bodyScannedAt.get(f);
+    if (sa) bodyScannedAt.set(reported.get(fp)!, sa);
   }
 
   // one read for every reported fingerprint up front, then a single batched
@@ -220,15 +230,22 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
     const title = f.title ?? defaultTitle(f);
     const detail = f.detail ?? '';
     const stateJson = JSON.stringify({ last: f, suppressed_by: supp?.id ?? null, suppressed_via: match?.via ?? null });
+    // cheap-tier and hash-only cycles carry no provenance and must not blank what the last scan recorded
+    const prov = [f.image_ref ?? null, f.image_digest ?? null, bodyScannedAt.get(f) ?? null];
+    // a finding from a body overwrites exactly (an older agent's body clears the ref rather than leaving a stale one)
+    const PROV = bodyScannedAt.has(f)
+      ? 'image_ref = ?, image_digest = ?, scanned_at = ?'
+      : 'image_ref = COALESCE(?, image_ref), image_digest = COALESCE(?, image_digest), scanned_at = COALESCE(?, scanned_at)';
 
     if (existing === undefined) {
       const status = supp ? 'muted' : 'open';
       writes.push(
         env.DB.prepare(
           `INSERT INTO findings
-             (fingerprint, agent_id, kind, subject, identifier, severity, title, detail, first_seen, last_seen, status, state_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(fp, agent.id, f.kind, f.subject, f.identifier, sev, title, detail, now, now, status, stateJson),
+             (fingerprint, agent_id, kind, subject, identifier, severity, title, detail, first_seen, last_seen, status, state_json,
+              image_ref, image_digest, scanned_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(fp, agent.id, f.kind, f.subject, f.identifier, sev, title, detail, now, now, status, stateJson, ...prov),
       );
       if (status === 'open') opened.push(f);
       continue;
@@ -238,8 +255,8 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
       const status = supp ? 'muted' : 'open';
       writes.push(
         env.DB.prepare(
-          'UPDATE findings SET status = ?, last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ? WHERE fingerprint = ?',
-        ).bind(status, now, sev, title, detail, stateJson, fp),
+          `UPDATE findings SET status = ?, last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ?, ${PROV} WHERE fingerprint = ?`,
+        ).bind(status, now, sev, title, detail, stateJson, ...prov, fp),
         env.DB.prepare('DELETE FROM notifications WHERE fingerprint = ?').bind(fp),
       );
       if (status === 'open') reopened.push(f);
@@ -250,8 +267,8 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
       // the suppression rule that muted it is gone / expired -> back to open
       writes.push(
         env.DB.prepare(
-          'UPDATE findings SET status = ?, last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ? WHERE fingerprint = ?',
-        ).bind('open', now, sev, title, detail, stateJson, fp),
+          `UPDATE findings SET status = ?, last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ?, ${PROV} WHERE fingerprint = ?`,
+        ).bind('open', now, sev, title, detail, stateJson, ...prov, fp),
         env.DB.prepare('DELETE FROM notifications WHERE fingerprint = ?').bind(fp),
       );
       reopened.push(f);
@@ -260,10 +277,11 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
 
     if ((existing === 'open' || existing === 'acked') && supp) {
       writes.push(
-        env.DB.prepare('UPDATE findings SET status = ?, last_seen = ?, state_json = ? WHERE fingerprint = ?').bind(
+        env.DB.prepare(`UPDATE findings SET status = ?, last_seen = ?, state_json = ?, ${PROV} WHERE fingerprint = ?`).bind(
           'muted',
           now,
           stateJson,
+          ...prov,
           fp,
         ),
       );
@@ -278,8 +296,8 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
 
     writes.push(
       env.DB.prepare(
-        'UPDATE findings SET last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ? WHERE fingerprint = ?',
-      ).bind(now, sev, title, detail, stateJson, fp),
+        `UPDATE findings SET last_seen = ?, severity = ?, title = ?, detail = ?, state_json = ?, ${PROV} WHERE fingerprint = ?`,
+      ).bind(now, sev, title, detail, stateJson, ...prov, fp),
     );
     if (isEscalation) {
       writes.push(env.DB.prepare("DELETE FROM notifications WHERE fingerprint = ? AND kind = 'alert'").bind(fp));
