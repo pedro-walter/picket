@@ -125,9 +125,13 @@ copies are then `*|pkg@vendored` with `--inherit all`, and cannot mask a top-lev
   identifier **with the `@vendored` suffix stripped** keeps matching, i.e. legacy `*|setuptools` rules behave as
   today. Housekeeping then rewrites legacy vendored rules to the explicit form, after which a real top-level
   copy is no longer masked.
-- **Unverified assumption**: that trivy reports a distinguishable `PkgPath` for pip's bundled copies. Phase 3 is
-  gated on running trivy against `healthchecks/healthchecks:4.4-2` and the bazarr image and looking at the JSON.
-  If it doesn't, we fall back to matching on `detail`/`Target` or drop this phase.
+- **Verified 2026-10-02 (trivy on the real images)**: the discriminator is *absence* of `PkgPath`, not a
+  `/_vendor/` path. On `4.4-1`, `urllib3 2.7.0` appears twice in the python-pkg results: one with
+  `PkgPath=usr/local/lib/python3.14/site-packages/urllib3-2.7.0.dist-info/METADATA` (top-level) and one with no
+  `PkgPath` (pip's vendored copy); the same for setuptools/msgpack on the vendored side. So the rule is: python-pkg
+  vulnerability with empty `PkgPath` => `@vendored`. Today's `seen[CVE|pkg]` dedup collapses exactly these pairs.
+  Samples: scratchpad `hc-4.4-1.json`, `hc-4.4-2.json`, `hc-4.4-2-all.json`. Still to decide before Phase 3:
+  whether other ecosystems (node, jar) behave the same; python only at first.
 
 ## Housekeeping: the 47 dead `healthchecks/healthchecks` rules
 
@@ -207,7 +211,7 @@ Worker (vitest, `server/test/`):
 
 1. Lineage source: `picketctl lineage sync` from `custom-docker/*/Dockerfile`. OCI labels not pursued now.
 2. `inherit` defaults to `none`; explicit `unfixed|all` only.
-3. Phase 3 (vendored split) waits for the trivy `PkgPath` check on the real images.
+3. Phase 3 (vendored split) waited for the trivy check; it is now viable (see Phase 3 section) and still comes after phases 1-2.
 4. Expiry/removal sweep: **included in phase 1** (delegated). Reason: lineage widens and lengthens rule reach,
    and the fix is small (daily cron + reopen on rule delete) and independent of the agent.
 5. OK to prepare the `rules rm` list for the 47 as a review doc; nothing executed.
