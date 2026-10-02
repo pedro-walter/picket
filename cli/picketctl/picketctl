@@ -54,8 +54,19 @@ picketctl <command> [args]
                                           mute (adds a finding-scoped suppression)
   unmute <fingerprint>                    drop that mute rule, reopen
   rules list                             list suppression rules
-  rules add --kind K --reason "..." [--subject G --identifier G --cve G --expires ISO8601]
-  rules rm <id>                          delete a suppression rule
+  rules add --kind K --reason "..." [--subject G --identifier G --cve G --expires ISO8601
+            --inherit none|unfixed|all]
+                                         --inherit lets the rule reach image-lineage descendants
+                                         (overlays) of its subject; default none
+  rules patch <id> [--expires ISO8601|none] [--inherit none|unfixed|all]
+  rules audit                            per-rule matches, dead/expired/no-expiry, overlay twins (read-only)
+  rules rm <id>                          delete a suppression rule (its findings reopen)
+  lineage list                           declared overlay -> upstream image edges
+  lineage add <overlay> <upstream> [--apply]
+  lineage rm <overlay> [--apply]         preview by default: shows which findings would flip; --apply writes
+  lineage pairs <custom-docker dir>      print overlay<TAB>upstream parsed from the Dockerfiles (local only)
+  lineage sync <custom-docker dir> [--apply]
+                                         preview (or apply) every pair from lineage pairs
   seed-ignores <dir>                     import server-checks/image-watch/ignore/*.txt
   release list                           list registered releases
   release add <version> --base-url U --sha256sums FILE [--notes "..."]
@@ -63,6 +74,43 @@ picketctl <command> [args]
   release rm <version>                   unregister a release
   rollout <version> [bucket]             set desired_version for a rollout bucket
 EOF
+}
+
+# lineage_pairs <dir>: one "overlay<TAB>upstream" line per <dir>/**/Dockerfile.
+# overlay = $PICKET_REGISTRY/<path under dir> (the registry build-and-push.sh pushes to);
+# upstream = the first FROM's repo, ARG defaults expanded, tag/digest stripped.
+lineage_pairs() {
+  ldir="${1:?usage: picketctl lineage pairs <custom-docker dir>}"
+  registry="${PICKET_REGISTRY:-docker.souspike.com.br}"
+  find "$ldir" -name Dockerfile | sort | while IFS= read -r df; do
+    name="${df#"$ldir"/}"; name="${name%/Dockerfile}"
+    from="$(grep -iE '^[[:space:]]*FROM[[:space:]]' "$df" | head -1 | sed -E 's/^[[:space:]]*[Ff][Rr][Oo][Mm][[:space:]]+//' | tr ' ' '\n' | grep -v '^--' | head -1)"
+    [ -n "$from" ] || continue
+    # expand ${VAR} / $VAR from `ARG VAR=default` lines
+    grep -E '^[[:space:]]*ARG[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=' "$df" | sed -E 's/^[[:space:]]*ARG[[:space:]]+//' | while IFS='=' read -r k v; do
+      printf '%s\t%s\n' "$k" "$v"
+    done > "${TMPDIR:-/tmp}/picketctl-args.$$"
+    while IFS="$(printf '\t')" read -r k v; do
+      from="$(printf '%s' "$from" | sed "s|\${$k}|$v|g; s|\$$k|$v|g")"
+    done < "${TMPDIR:-/tmp}/picketctl-args.$$"
+    rm -f "${TMPDIR:-/tmp}/picketctl-args.$$"
+    from="${from%%@*}"
+    last="${from##*/}"
+    case "$last" in *:*) from="${from%:*}" ;; esac
+    case "$from" in scratch|*'$'*) echo "skip $name: cannot resolve FROM '$from'" >&2; continue ;; esac
+    # docker.io shorthands normalise the way the agent's subject does (bare repo, no docker.io/ or library/)
+    from="${from#docker.io/}"; from="${from#library/}"
+    printf '%s/%s\t%s\n' "$registry" "$name" "$from"
+  done
+}
+
+lineage_apply_or_preview() { # <subject> <upstream> <apply:0|1> <source>
+  if [ "$3" = 1 ]; then
+    req POST /admin/lineage --data "$(printf '{"subject":%s,"upstream":%s,"source":%s}' "$(json_str "$1")" "$(json_str "$2")" "$(json_str "$4")")" | pretty
+  else
+    echo "== preview: $1 <- derived from $2 (nothing written; add --apply)"
+    req POST /admin/lineage/preview --data "$(printf '{"subject":%s,"upstream":%s}' "$(json_str "$1")" "$(json_str "$2")")" | pretty
+  fi
 }
 
 cmd="${1:-help}"
@@ -128,9 +176,25 @@ case "$cmd" in
     [ $# -gt 0 ] && shift || true
     case "$sub" in
       list) req GET /admin/suppressions | pretty ;;
+      audit) req GET /admin/suppressions/audit | pretty ;;
+      patch)
+        id="${1:?usage: picketctl rules patch <id> [--expires ISO8601|none] [--inherit none|unfixed|all]}"; shift
+        body=""
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --expires)
+              if [ "$2" = none ]; then v=null; else v="$(json_str "$2")"; fi
+              body="${body:+$body,}\"expires_at\":$v"; shift 2 ;;
+            --inherit) body="${body:+$body,}\"inherit\":$(json_str "$2")"; shift 2 ;;
+            *) echo "unknown arg: $1" >&2; exit 2 ;;
+          esac
+        done
+        [ -n "$body" ] || { echo "nothing to patch (--expires/--inherit)" >&2; exit 2; }
+        req PATCH "/admin/suppressions/$id" --data "{$body}" | pretty
+        ;;
       rm)   id="${1:?usage: picketctl rules rm <id>}"; req DELETE "/admin/suppressions/$id" | pretty ;;
       add)
-        kind=""; subject="*"; identifier="*"; cve="*"; reason=""; expires=""
+        kind=""; subject="*"; identifier="*"; cve="*"; reason=""; expires=""; inherit="none"
         while [ $# -gt 0 ]; do
           case "$1" in
             --kind) kind="$2"; shift 2 ;;
@@ -139,14 +203,48 @@ case "$cmd" in
             --cve) cve="$2"; shift 2 ;;
             --reason) reason="$2"; shift 2 ;;
             --expires) expires="$2"; shift 2 ;;
+            --inherit) inherit="$2"; shift 2 ;;
             *) echo "unknown arg: $1" >&2; exit 2 ;;
           esac
         done
         [ -n "$kind" ] && [ -n "$reason" ] || { echo "--kind and --reason required" >&2; exit 2; }
-        req POST /admin/suppressions --data "$(printf '{"kind":%s,"subject_glob":%s,"identifier_glob":%s,"cve_glob":%s,"reason":%s,"expires_at":%s}' \
-          "$(json_str "$kind")" "$(json_str "$subject")" "$(json_str "$identifier")" "$(json_str "$cve")" "$(json_str "$reason")" "$(json_str_or_null "$expires")")" | pretty
+        req POST /admin/suppressions --data "$(printf '{"kind":%s,"subject_glob":%s,"identifier_glob":%s,"cve_glob":%s,"reason":%s,"expires_at":%s,"inherit":%s}' \
+          "$(json_str "$kind")" "$(json_str "$subject")" "$(json_str "$identifier")" "$(json_str "$cve")" "$(json_str "$reason")" "$(json_str_or_null "$expires")" "$(json_str "$inherit")")" | pretty
         ;;
       *) echo "unknown rules subcommand: $sub" >&2; exit 2 ;;
+    esac
+    ;;
+
+  lineage)
+    sub="${1:?usage: picketctl lineage <list|add|rm|pairs|sync> ...}"
+    [ $# -gt 0 ] && shift || true
+    apply=0
+    case "$sub" in
+      list) req GET /admin/lineage | pretty ;;
+      pairs) lineage_pairs "${1:?usage: picketctl lineage pairs <custom-docker dir>}" ;;
+      add)
+        ov="${1:?usage: picketctl lineage add <overlay-subject> <upstream-subject> [--apply]}"
+        up="${2:?usage: picketctl lineage add <overlay-subject> <upstream-subject> [--apply]}"
+        [ "${3:-}" = --apply ] && apply=1
+        lineage_apply_or_preview "$ov" "$up" "$apply" manual
+        ;;
+      rm)
+        ov="${1:?usage: picketctl lineage rm <overlay-subject> [--apply]}"
+        if [ "${2:-}" = --apply ]; then
+          req DELETE "/admin/lineage?subject=$(printf '%s' "$ov" | sed 's|/|%2F|g')" | pretty
+        else
+          echo "== preview: removing lineage for $ov (nothing written; add --apply)"
+          req POST /admin/lineage/preview --data "$(printf '{"subject":%s,"upstream":null}' "$(json_str "$ov")")" | pretty
+        fi
+        ;;
+      sync)
+        dir="${1:?usage: picketctl lineage sync <custom-docker dir> [--apply]}"
+        [ "${2:-}" = --apply ] && apply=1
+        lineage_pairs "$dir" | while IFS="$(printf '\t')" read -r ov up; do
+          lineage_apply_or_preview "$ov" "$up" "$apply" dockerfile
+        done
+        ;;
+      *) echo "unknown lineage subcommand: $sub" >&2; exit 2 ;;
     esac
     ;;
 

@@ -1,7 +1,7 @@
 import type { Env } from './index';
 import type { Agent } from './auth';
 import { sha256Hex, uuid, nowIso, fingerprintInput } from './util';
-import { matchSuppression, type Suppression, type ReportedFinding } from './suppress';
+import { matchSuppressionVia, resolveAncestors, type Lineage, type Suppression, type ReportedFinding } from './suppress';
 import { sendReportEmail, type ResolvedItem } from './notify';
 
 /**
@@ -65,7 +65,14 @@ type FP = ReportedFinding & { fingerprint: string };
 const D1_VARS = 90;
 const D1_BATCH = 50;
 
-async function flushBatch(env: Env, stmts: D1PreparedStatement[]): Promise<void> {
+export async function loadLineage(env: Env): Promise<Lineage> {
+  const rows =
+    (await env.DB.prepare('SELECT subject, upstream FROM image_lineage').all<{ subject: string; upstream: string }>())
+      .results ?? [];
+  return new Map(rows.map((r) => [r.subject, r.upstream]));
+}
+
+export async function flushBatch(env: Env, stmts: D1PreparedStatement[]): Promise<void> {
   for (let i = 0; i < stmts.length; i += D1_BATCH) {
     await env.DB.batch(stmts.slice(i, i + D1_BATCH));
   }
@@ -170,6 +177,8 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
     (await env.DB.prepare('SELECT * FROM suppressions WHERE expires_at IS NULL OR expires_at > ?').bind(now).all<Suppression>())
       .results ?? [];
 
+  const lineage = await loadLineage(env);
+
   const reported = new Map<string, FP>();
   for (const f of toDiff) {
     const fp = await sha256Hex(fingerprintInput(f.kind, agent.name, f.subject, f.identifier));
@@ -205,11 +214,12 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
 
   for (const [fp, f] of reported) {
     const existing = priorStatus.get(fp);
-    const supp = matchSuppression(supps, f);
+    const match = matchSuppressionVia(supps, f, resolveAncestors(lineage, f.subject));
+    const supp = match?.rule ?? null;
     const sev = (f.severity ?? 'info').toLowerCase();
     const title = f.title ?? defaultTitle(f);
     const detail = f.detail ?? '';
-    const stateJson = JSON.stringify({ last: f, suppressed_by: supp?.id ?? null });
+    const stateJson = JSON.stringify({ last: f, suppressed_by: supp?.id ?? null, suppressed_via: match?.via ?? null });
 
     if (existing === undefined) {
       const status = supp ? 'muted' : 'open';
@@ -309,7 +319,7 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
   return resp;
 }
 
-async function maybeNotify(
+export async function maybeNotify(
   env: Env,
   agentName: string,
   opened: FP[],
@@ -370,15 +380,23 @@ async function maybeNotify(
 export async function applyNewSuppression(env: Env, rule: Suppression): Promise<number> {
   const rows =
     (await env.DB.prepare(
-      "SELECT fingerprint, kind, subject, identifier FROM findings WHERE kind = ? AND status IN ('open','acked')",
+      "SELECT fingerprint, kind, subject, identifier, detail, state_json FROM findings WHERE kind = ? AND status IN ('open','acked')",
     )
       .bind(rule.kind)
-      .all<{ fingerprint: string; kind: string; subject: string; identifier: string }>()).results ?? [];
+      .all<{ fingerprint: string; kind: string; subject: string; identifier: string; detail: string | null; state_json: string | null }>())
+      .results ?? [];
+  const lineage = await loadLineage(env);
 
   const now = nowIso();
   const writes: D1PreparedStatement[] = [];
   for (const r of rows) {
-    if (!matchSuppression([rule], r)) continue;
+    let fixed: string | undefined;
+    try {
+      fixed = (JSON.parse(r.state_json ?? 'null') as { last?: { fixed_version?: string } } | null)?.last?.fixed_version;
+    } catch {
+      /* advisory */
+    }
+    if (!matchSuppressionVia([rule], { ...r, detail: r.detail ?? '', fixed_version: fixed }, resolveAncestors(lineage, r.subject))) continue;
     writes.push(
       env.DB.prepare("UPDATE findings SET status = 'muted', last_seen = ? WHERE fingerprint = ?").bind(now, r.fingerprint),
       env.DB.prepare('DELETE FROM notifications WHERE fingerprint = ?').bind(r.fingerprint),

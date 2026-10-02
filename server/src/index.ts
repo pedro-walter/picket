@@ -3,6 +3,9 @@ import { authenticateAgent, authenticateAdmin } from './auth';
 import { ingestReport, applyNewSuppression, type ReportPayload } from './ingest';
 import { offlineCheck, dailyDigest, staleSectionCheck } from './cron';
 import { renderDashboard } from './dashboard';
+import { loadActiveSuppressions, loadStoredFindings, reevaluateFindings } from './lineage';
+import { loadLineage } from './ingest';
+import { auditRules, diffLineage, wouldCreateCycle, type Suppression } from './suppress';
 import { uuid, nowIso, sha256Hex, base64 } from './util';
 
 export interface Env {
@@ -24,6 +27,8 @@ export interface Env {
 }
 
 type AdminVars = { adminEmail?: string };
+
+const INHERIT_MODES = ['none', 'unfixed', 'all'];
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -221,8 +226,11 @@ admin.post('/suppressions', async (c) => {
     reason?: string;
     author?: string;
     expires_at?: string;
+    inherit?: string;
   }>();
   if (!b.kind || !b.reason) return c.json({ error: 'kind and reason required' }, 400);
+  const inherit = b.inherit ?? 'none';
+  if (!INHERIT_MODES.includes(inherit)) return c.json({ error: `inherit must be one of ${INHERIT_MODES.join('|')}` }, 400);
   const now = nowIso();
   const rule = {
     id: uuid(),
@@ -234,10 +242,11 @@ admin.post('/suppressions', async (c) => {
     author: b.author ?? 'picketctl',
     created_at: now,
     expires_at: b.expires_at ?? null,
+    inherit,
   };
   await c.env.DB.prepare(
-    `INSERT INTO suppressions (id, kind, subject_glob, identifier_glob, cve_glob, reason, author, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO suppressions (id, kind, subject_glob, identifier_glob, cve_glob, reason, author, created_at, expires_at, inherit)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       rule.id,
@@ -249,15 +258,91 @@ admin.post('/suppressions', async (c) => {
       rule.author,
       rule.created_at,
       rule.expires_at,
+      rule.inherit,
     )
     .run();
   const muted = await applyNewSuppression(c.env, rule);
   return c.json({ id: rule.id, muted });
 });
 
+// per-rule view: what each rule matches today, which are dead/expired/duplicated. Read-only.
+admin.get('/suppressions/audit', async (c) => {
+  const [supps, findings, lineage] = await Promise.all([
+    c.env.DB.prepare('SELECT * FROM suppressions').all<Suppression>().then((r) => r.results ?? []),
+    loadStoredFindings(c.env),
+    loadLineage(c.env),
+  ]);
+  return c.json({ rules: auditRules(supps, findings, lineage, nowIso()) });
+});
+
+admin.patch('/suppressions/:id', async (c) => {
+  const b = await c.req.json<{ expires_at?: string | null; inherit?: string }>();
+  const sets: string[] = [];
+  const vals: (string | null)[] = [];
+  if ('expires_at' in b) {
+    sets.push('expires_at = ?');
+    vals.push(b.expires_at ?? null);
+  }
+  if (b.inherit !== undefined) {
+    if (!INHERIT_MODES.includes(b.inherit)) return c.json({ error: `inherit must be one of ${INHERIT_MODES.join('|')}` }, 400);
+    sets.push('inherit = ?');
+    vals.push(b.inherit);
+  }
+  if (!sets.length) return c.json({ error: 'nothing to update (expires_at, inherit)' }, 400);
+  vals.push(c.req.param('id'));
+  const r = await c.env.DB.prepare(`UPDATE suppressions SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
+  if (!r.meta.changes) return c.json({ error: 'no such rule' }, 404);
+  return c.json({ updated: r.meta.changes, ...(await reevaluateFindings(c.env)) });
+});
+
 admin.delete('/suppressions/:id', async (c) => {
   const r = await c.env.DB.prepare('DELETE FROM suppressions WHERE id = ?').bind(c.req.param('id')).run();
-  return c.json({ deleted: r.meta.changes });
+  // findings the rule was muting reopen now, not whenever a scan body next arrives
+  return c.json({ deleted: r.meta.changes, ...(await reevaluateFindings(c.env)) });
+});
+
+// ---- image lineage (overlay -> upstream) ----
+admin.get('/lineage', async (c) => {
+  const rows = (await c.env.DB.prepare('SELECT * FROM image_lineage ORDER BY subject').all()).results;
+  return c.json({ lineage: rows });
+});
+
+/** What adding (`upstream` set) or removing (`upstream` null) an edge would change. Writes nothing. */
+admin.post('/lineage/preview', async (c) => {
+  const b = await c.req.json<{ subject?: string; upstream?: string | null }>();
+  if (!b.subject) return c.json({ error: 'subject required' }, 400);
+  const before = await loadLineage(c.env);
+  const after = new Map(before);
+  if (b.upstream) {
+    if (wouldCreateCycle(before, b.subject, b.upstream)) return c.json({ error: 'edge would create a cycle' }, 400);
+    after.set(b.subject, b.upstream);
+  } else {
+    after.delete(b.subject);
+  }
+  const [supps, findings] = await Promise.all([loadActiveSuppressions(c.env), loadStoredFindings(c.env)]);
+  return c.json({ subject: b.subject, upstream: b.upstream ?? null, changes: diffLineage(supps, findings, before, after) });
+});
+
+admin.post('/lineage', async (c) => {
+  const b = await c.req.json<{ subject?: string; upstream?: string; source?: string; note?: string }>();
+  if (!b.subject || !b.upstream) return c.json({ error: 'subject and upstream required' }, 400);
+  if (wouldCreateCycle(await loadLineage(c.env), b.subject, b.upstream)) {
+    return c.json({ error: 'edge would create a cycle' }, 400);
+  }
+  await c.env.DB.prepare(
+    `INSERT INTO image_lineage (subject, upstream, source, note, created_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(subject) DO UPDATE SET upstream = excluded.upstream, source = excluded.source, note = excluded.note`,
+  )
+    .bind(b.subject, b.upstream, b.source ?? 'manual', b.note ?? null, nowIso())
+    .run();
+  return c.json({ subject: b.subject, upstream: b.upstream, ...(await reevaluateFindings(c.env)) });
+});
+
+admin.delete('/lineage', async (c) => {
+  const subject = c.req.query('subject');
+  if (!subject) return c.json({ error: 'subject query param required' }, 400);
+  const r = await c.env.DB.prepare('DELETE FROM image_lineage WHERE subject = ?').bind(subject).run();
+  return c.json({ deleted: r.meta.changes, ...(await reevaluateFindings(c.env)) });
 });
 
 // ---- releases (self-update artifact registry) ----
@@ -341,5 +426,6 @@ export default {
     }
     await offlineCheck(env);
     await staleSectionCheck(env);
+    await reevaluateFindings(env); // expired/removed rules reopen their findings without waiting for a scan body
   },
 };
