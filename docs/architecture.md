@@ -134,6 +134,12 @@ ancestors, never the reverse.
 | `unfixed` | only while the finding has no published fix (`fixed_version`, else `-> fixed in` in `detail`) | "no fix exists yet" decisions: an overlay that could patch the package is not silenced |
 | `all` | yes, fix or not | reachability decisions with evidence (pip-vendored copies, unused binaries) |
 
+**Vendored python copies (agent >= 0.4.0).** A python-pkg vulnerability with no `PkgPath` in trivy's output (pip's
+bundled setuptools/urllib3/msgpack) gets identifier `CVE|pkg@vendored`; the top-level install keeps `CVE|pkg`. The
+matcher also tries a rule's `identifier_glob` against the identifier with `@vendored` stripped (`legacyIdentifier`
+in `server/src/suppress.ts`), so legacy `*|pkg` rules keep covering both. A rule written as `*|pkg@vendored`
+covers only the vendored copy, so it can no longer mask a real top-level one. Deploy the Worker before 0.4.0.
+
 The matched rule's id lands in `findings.state_json.suppressed_by` (so reason/author/expiry stay those of the
 original decision) and the ancestor it matched through in `suppressed_via`.
 

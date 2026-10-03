@@ -224,6 +224,13 @@ migration is `0005` (not `0004b`), and the stale label uses the existing `SECTIO
 a separate "2x interval" rule, because a ref mismatch cannot persist (the scanned refs are part of the section hash,
 so any change sends a body).
 
+## Phase 3 status (2026-10-03)
+
+Implemented, not deployed: agent emits `CVE|pkg@vendored` for python-pkg findings without `PkgPath` (python only);
+Worker `legacyIdentifier` shim in `matchSuppressionVia`. Rollout: Worker deploy (no migration), then tag v0.4.0,
+canary, fleet. Expect on the first 0.4.0 report per host: old `CVE|pkg` fingerprints that were vendored-only
+resolve, new `@vendored` ones open and are muted by the legacy rules via the shim.
+
 ## Original questions (answered above)
 
 1. Lineage source: table filled by `picketctl lineage sync` from `custom-docker/*/Dockerfile` (recommended)

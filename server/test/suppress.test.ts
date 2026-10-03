@@ -193,3 +193,25 @@ describe('auditRules', () => {
     expect(out[0]).toMatchObject({ matches_inherited: 1, dead: false, expired: true, subject_live: true });
   });
 });
+
+describe('vendored identifier shim', () => {
+  const V = { kind: 'image-cve', subject: 'x', identifier: 'CVE-2025-47273|setuptools@vendored' };
+  const T = { kind: 'image-cve', subject: 'x', identifier: 'CVE-2025-47273|setuptools' };
+
+  it('a legacy *|pkg rule keeps covering the vendored copy and the top-level copy', () => {
+    const r = [rule({ subject_glob: 'x', identifier_glob: '*|setuptools' })];
+    expect(matchSuppression(r, V)?.id).toBe('r1');
+    expect(matchSuppression(r, T)?.id).toBe('r1');
+  });
+
+  it('a *|pkg@vendored rule covers only the vendored copy', () => {
+    const r = [rule({ subject_glob: 'x', identifier_glob: '*|setuptools@vendored' })];
+    expect(matchSuppression(r, V)?.id).toBe('r1');
+    expect(matchSuppression(r, T)).toBeNull();
+  });
+
+  it('cve globs and other packages are unaffected', () => {
+    expect(matchSuppression([rule({ subject_glob: 'x', identifier_glob: '*|setuptools', cve_glob: 'CVE-1-*' })], V)).toBeNull();
+    expect(matchSuppression([rule({ subject_glob: 'x', identifier_glob: '*|msgpack' })], V)).toBeNull();
+  });
+});

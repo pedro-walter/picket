@@ -217,7 +217,7 @@ permanent, unreviewed ignore here. Every rule also gets an explicit
   overlay's finding the moment a fix exists, so an overlay that could patch the
   package is never silenced by it.
 - `--inherit all` only for reachability reasons you can evidence (pip-vendored
-  copy, helper binary that never runs the vulnerable path), where a published
+  copy - write those as `--identifier '*|pkg@vendored'` so they cannot mask a top-level copy, helper binary that never runs the vulnerable path), where a published
   fix doesn't change the answer.
 - omit it (`none`) for a one-off decision that is really about this exact image. Write `--reason` as the actual
 justification a future reader (including next week's you) can check —

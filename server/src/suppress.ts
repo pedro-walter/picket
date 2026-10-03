@@ -54,6 +54,19 @@ export function hasPublishedFix(f: ReportedFinding): boolean {
   return /->\s*fixed in\s+\S/i.test(f.detail ?? '');
 }
 
+export const VENDORED_SUFFIX = '@vendored';
+
+/**
+ * Agents >= 0.4.0 tag a python copy vendored inside another package (pip's
+ * `_vendor`) as `CVE|pkg@vendored`. Rules written before that split say
+ * `*|pkg`, so a rule is also tried against the identifier with the suffix
+ * stripped: legacy rules keep covering vendored copies, while a rule that
+ * spells `@vendored` cannot reach a top-level copy.
+ */
+export function legacyIdentifier(identifier: string): string {
+  return identifier.endsWith(VENDORED_SUFFIX) ? identifier.slice(0, -VENDORED_SUFFIX.length) : identifier;
+}
+
 /** Ancestors of `subject`, nearest first. Cycle-safe and depth-capped. */
 export function resolveAncestors(lineage: Lineage, subject: string): string[] {
   const out: string[] = [];
@@ -113,7 +126,8 @@ export function matchSuppressionVia(
       via = hit;
     }
 
-    if (!globToRegExp(s.identifier_glob).test(f.identifier)) continue;
+    const idRe = globToRegExp(s.identifier_glob);
+    if (!idRe.test(f.identifier) && !idRe.test(legacyIdentifier(f.identifier))) continue;
     if (s.cve_glob !== '*') {
       if (!cve || !globToRegExp(s.cve_glob).test(cve)) continue;
     }

@@ -43,6 +43,7 @@ type trivyReport struct {
 		Vulnerabilities []struct {
 			VulnerabilityID  string `json:"VulnerabilityID"`
 			PkgName          string `json:"PkgName"`
+			PkgPath          string `json:"PkgPath"`
 			InstalledVersion string `json:"InstalledVersion"`
 			FixedVersion     string `json:"FixedVersion"`
 			Severity         string `json:"Severity"`
@@ -79,6 +80,18 @@ func (c *ImageCVE) Scan(ctx context.Context) ([]report.Finding, error) {
 	return findings, nil
 }
 
+// VendoredSuffix marks a python package that is bundled inside another one
+// (pip's own copies of setuptools/urllib3/msgpack...) rather than installed
+// top-level. The Worker keeps legacy `*|pkg` rules matching these.
+const VendoredSuffix = "@vendored"
+
+// vendored: trivy's python-pkg results carry a PkgPath (the dist-info
+// METADATA file) for installed distributions only; a copy found inside another
+// package has none. Verified against the healthchecks 4.4-1/4.4-2 images.
+func vendored(resultType, pkgPath string) bool {
+	return resultType == "python-pkg" && pkgPath == ""
+}
+
 // digestOf prefers the registry digest of the scanned image; a locally built
 // image has none, so fall back to its image ID.
 func digestOf(repoDigests []string, imageID string) string {
@@ -109,6 +122,9 @@ func (c *ImageCVE) scanOne(ctx context.Context, img compose.Image) ([]report.Fin
 	for _, r := range tr.Results {
 		for _, v := range r.Vulnerabilities {
 			id := v.VulnerabilityID + "|" + v.PkgName
+			if vendored(r.Type, v.PkgPath) {
+				id += VendoredSuffix
+			}
 			if v.VulnerabilityID == "" || seen[id] {
 				continue
 			}

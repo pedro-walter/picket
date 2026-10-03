@@ -310,3 +310,31 @@ func TestImageCVEFailureKeepsPreviousScans(t *testing.T) {
 		t.Errorf("scans after failure = %+v", got)
 	}
 }
+
+// A vendored python copy (no PkgPath) and the top-level one are distinct
+// findings; OS packages and a python-pkg with a path keep the plain identifier.
+func TestImageCVESplitsVendoredPython(t *testing.T) {
+	compose := writeCompose(t, "services:\n  hc:\n    image: reg.example/hc:4.4-2\n")
+	trivy := fakeRunner{fn: func(string, []string) ([]byte, error) {
+		return []byte(`{"Metadata":{"ImageID":"sha256:a"},"Results":[
+		 {"Target":"os","Type":"debian","Vulnerabilities":[
+		  {"VulnerabilityID":"CVE-1","PkgName":"libssl3","Severity":"HIGH"}]},
+		 {"Target":"Python","Type":"python-pkg","Vulnerabilities":[
+		  {"VulnerabilityID":"CVE-2","PkgName":"urllib3","PkgPath":"usr/local/lib/python3.14/site-packages/urllib3-2.7.0.dist-info/METADATA","FixedVersion":"2.8.0","Severity":"HIGH"},
+		  {"VulnerabilityID":"CVE-2","PkgName":"urllib3","FixedVersion":"2.8.0","Severity":"HIGH"},
+		  {"VulnerabilityID":"CVE-3","PkgName":"setuptools","Severity":"HIGH"}]}]}`), nil
+	}}
+	fs, err := (&ImageCVE{ComposeFiles: []string{compose}, Trivy: trivy}).Scan(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, f := range fs {
+		ids = append(ids, f.Identifier)
+	}
+	sort.Strings(ids)
+	want := []string{"CVE-1|libssl3", "CVE-2|urllib3", "CVE-2|urllib3@vendored", "CVE-3|setuptools@vendored"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Errorf("identifiers = %v, want %v", ids, want)
+	}
+}
