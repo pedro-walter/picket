@@ -35,7 +35,7 @@ export async function renderDashboard(env: Env, token: string): Promise<string> 
       .map((a) => {
         const last = a.last_report_at ? new Date(a.last_report_at) : null;
         const online = last && last.getTime() >= offlineBefore;
-        const ver = a.desired_version ? `${esc(a.agent_version ?? '—')} → ${esc(a.desired_version)}` : esc(a.agent_version ?? '—');
+        const ver = a.desired_version && a.desired_version !== a.agent_version ? `${esc(a.agent_version ?? '—')} → ${esc(a.desired_version)}` : esc(a.agent_version ?? '—');
         return `<tr><td>${esc(a.name)}</td><td>${ver}</td><td>${esc(a.rollout_bucket)}</td>
           <td class="${online ? 'ok' : 'bad'}">${last ? esc(a.last_report_at) : 'never'}</td></tr>`;
       })
