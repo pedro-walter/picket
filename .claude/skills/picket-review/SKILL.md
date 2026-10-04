@@ -27,7 +27,8 @@ If asked to "apply" a suppression from a report, that's a separate,
 explicit instruction outside this skill's contract, not something to do as
 part of running it.
 
-Run from the repo root. Needs `cli/picketctl/picketctl` and
+Run from the repo root. Needs `picketctl` on `PATH` (`~/.local/bin/picketctl` is a
+symlink to `cli/picketctl/picketctl`; below it is written `picketctl`) and
 `~/.config/picket/picketctl.env` (or `PICKET_URL`/`PICKET_ADMIN_TOKEN` in
 the environment) — same config the operator already uses. Building and
 pushing an overlay additionally needs a real docker daemon and registry
@@ -39,7 +40,7 @@ missing.
 
 ```sh
 cd cli/picketctl
-./picketctl findings --status open > /tmp/picket-review-findings.json
+picketctl findings --status open > /tmp/picket-review-findings.json
 ```
 
 If invoked with an agent name argument, add `--agent <name>` and scope the
@@ -54,7 +55,7 @@ jq -r '[.findings[] | select(.kind=="image-cve")] | group_by(.subject) | map({su
 
 Image findings from agents >= 0.3.0 carry `image_ref`/`image_digest`/
 `scanned_at`. Before treating a finding as a regression, check them
-(`./picketctl scans` shows what each agent's current scan covered): a finding
+(`picketctl scans` shows what each agent's current scan covered): a finding
 whose `image_ref` is not the compose pin, or a stale `scanned_at`, is an old
 scan that has not been replaced yet, not new exposure. A `container-stale`
 finding that says "compose pins X; container was created from Y" means the host
@@ -62,12 +63,12 @@ pulled the new tag but never recreated the container - recommend the recreate,
 do not write rules for it.
 
 Also pull `image-tag` findings (same call, filter `kind=="image-tag"`) and
-existing suppression rules (`./picketctl rules list`) — `findings
+existing suppression rules (`picketctl rules list`) — `findings
 --status open` already excludes anything `muted`, so nothing here re-treads
 a suppression that's already in force; the rules list is just useful
 context for phrasing a *new* rule consistently with existing ones. Also
-read `./picketctl lineage list` (which overlay subjects are already declared
-as derived from which upstream) and `./picketctl rules audit` (per rule: what
+read `picketctl lineage list` (which overlay subjects are already declared
+as derived from which upstream) and `picketctl rules audit` (per rule: what
 it matches now, dead / expired / no-expiry, and its overlay `twin_id`).
 
 **Subjects and lineage.** A finding's subject is the repo from the compose
@@ -79,6 +80,21 @@ the upstream's rules first; a finding that is open only because a rule lacks
 `--inherit` is a rule to re-scope (`picketctl rules patch <id> --inherit ...`),
 not a new decision. Findings muted through lineage show `suppressed_via` in
 `state_json`.
+
+**Vendored python copies (`@vendored`).** Agents >= 0.4.0 report a python package
+bundled inside another one (pip's own `setuptools`/`urllib3`/`msgpack`) as
+`CVE|pkg@vendored`; the top-level install stays `CVE|pkg`. They are separate
+findings with separate fixes: the vendored copy is fixed by a newer pip (a base
+image bump), the top-level one by upgrading the package. Rules:
+- Write a rule for a vendored copy as `--identifier '*|<pkg>@vendored'` (usually
+  `--inherit all`, with the reachability evidence in `--reason`). It cannot mask a
+  top-level copy of the same package.
+- Older rules written `*|<pkg>` still match both copies (the Worker strips the
+  suffix before matching). Leave them; when one comes up for renewal, re-create
+  it in the explicit `@vendored` form. A *top-level* `CVE|pkg` finding that a
+  legacy `*|pkg` rule mutes is worth a second look: that rule was written when
+  the two copies were merged, so check it was really meant for the top-level one.
+- Agents < 0.4.0 still report the plain identifier for both; mixed fleets are fine.
 
 ## Step 2 — Per-image context (no SSH, no compose greps)
 
@@ -193,9 +209,9 @@ for the pattern — same idea as `souspike/custom-docker`, one shared
 5. Put the lineage command in the report (print it, don't run it) the first
    time an overlay exists for an image, so the upstream's suppression
    decisions can follow it:
-   `./picketctl lineage add docker.souspike.com.br/<name> <repo>` (preview;
+   `picketctl lineage add docker.souspike.com.br/<name> <repo>` (preview;
    the user adds `--apply` after reading which findings would flip), or
-   `./picketctl lineage sync ../../custom-docker`. One edge per overlay, not
+   `picketctl lineage sync ../../custom-docker`. One edge per overlay, not
    per version.
 
 Flag it explicitly as a stopgap in the report — drop the overlay the
@@ -216,8 +232,8 @@ permanent, unreviewed ignore here. Every rule also gets an explicit
 - `--inherit unfixed` for "no fix published yet" reasons. It stops covering an
   overlay's finding the moment a fix exists, so an overlay that could patch the
   package is never silenced by it.
-- `--inherit all` only for reachability reasons you can evidence (pip-vendored
-  copy - write those as `--identifier '*|pkg@vendored'` so they cannot mask a top-level copy, helper binary that never runs the vulnerable path), where a published
+- `--inherit all` only for reachability reasons you can evidence (a pip-vendored
+  copy, a helper binary that never runs the vulnerable path), where a published
   fix doesn't change the answer.
 - omit it (`none`) for a one-off decision that is really about this exact image. Write `--reason` as the actual
 justification a future reader (including next week's you) can check —
@@ -259,7 +275,7 @@ the script didn't run or failed.
 
 **Suppress (90d, re-review next pass):**
 ​```sh
-./picketctl rules add --kind image-cve --subject healthchecks/healthchecks \
+picketctl rules add --kind image-cve --subject healthchecks/healthchecks \
   --identifier '*|<pkg>' --cve <CVE> --reason "..." --expires <date+90d> --inherit unfixed
 ​```
 ```
