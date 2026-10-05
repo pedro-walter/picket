@@ -11,6 +11,8 @@ export interface Agent {
   rollout_bucket: string;
   last_report_at: string | null;
   notes: string | null;
+  rescan_id: string | null;
+  rescan_sections: string | null;
 }
 
 const MAX_SKEW_SECONDS = 300;

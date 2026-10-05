@@ -11,7 +11,7 @@ See [`PLAN.md`](./PLAN.md) for the full design and rationale.
 | Path | What | Status |
 |---|---|---|
 | `server/` | Central service — Cloudflare Worker (Hono) + D1 + Resend | **working** — deployed at `picket.souspike.com.br` |
-| `cli/picketctl/` | Admin CLI (`mint-agent`, `findings`, `mute`, `rules`, `seed-ignores`) | **working** |
+| `cli/picketctl/` | Admin CLI (`mint-agent`, `findings`, `mute`, `rules`, `rescan`, `seed-ignores`) | **working** |
 | `agent/` | `picket-agent` Go daemon | **step 7 done** — all checks + hash-gated sections + signed self-update + `crane`/`trivy` auto-download |
 | `deploy/` | `install.sh` + systemd unit + `agent.example.yaml` + `cosign.pub` | `install.sh` wired (needs a published release + real `cosign.pub`) |
 | `.github/workflows/` | `release.yml` — build + cosign-sign + publish on `v*` tag | needs `COSIGN_KEY` / `COSIGN_PASSWORD` secrets |

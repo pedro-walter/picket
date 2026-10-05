@@ -491,3 +491,95 @@ func TestSectionStaleOnInputsChange(t *testing.T) {
 		t.Fatal("changed inputs make a fresh scan stale (restart path)")
 	}
 }
+
+// Central re-sends the request until the agent echoes rescan_done; the agent
+// must rescan once, echo the id, and stop echoing once central clears it.
+func TestRequestedRescanRunsOnceAndIsEchoed(t *testing.T) {
+	fc := newFakeCentral(t)
+	pending := true
+	fc.respond = func(p report.Payload) report.Response {
+		if p.RescanDone == "r1" {
+			pending = false
+		}
+		if pending {
+			return report.Response{OK: true, Rescan: &report.Rescan{ID: "r1", Sections: []string{"image-scan"}}}
+		}
+		return report.Response{OK: true}
+	}
+	var calls int
+	findings := []report.Finding{}
+	r := testRunner(t, fc.srv.URL, map[string]CheckFunc{}, []SectionSpec{imageScanSection(&calls, &findings)})
+	ctx := context.Background()
+
+	if err := r.cheapCycle(ctx); err != nil { // receives the request, rescans in the background
+		t.Fatal(err)
+	}
+	r.bg.Wait()
+	if calls != 1 {
+		t.Fatalf("scan calls = %d, want 1", calls)
+	}
+	if got := fc.last().RescanDone; got != "r1" {
+		t.Fatalf("follow-up report rescan_done = %q, want r1", got)
+	}
+	if err := r.cheapCycle(ctx); err != nil { // central cleared it
+		t.Fatal(err)
+	}
+	r.bg.Wait()
+	if calls != 1 {
+		t.Errorf("scan calls = %d after clear, want still 1", calls)
+	}
+	if err := r.cheapCycle(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := fc.last().RescanDone; got != "" {
+		t.Errorf("rescan_done = %q, want it dropped once central stopped sending the request", got)
+	}
+}
+
+func TestRequestedRescanSkipsOtherSections(t *testing.T) {
+	fc := newFakeCentral(t)
+	fc.respond = func(report.Payload) report.Response {
+		return report.Response{OK: true, Rescan: &report.Rescan{ID: "r2", Sections: []string{"daily"}}}
+	}
+	var calls int
+	findings := []report.Finding{}
+	r := testRunner(t, fc.srv.URL, map[string]CheckFunc{}, []SectionSpec{imageScanSection(&calls, &findings)})
+	if err := r.cheapCycle(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r.bg.Wait()
+	if calls != 0 {
+		t.Errorf("image-scan ran %d times for a daily-only request", calls)
+	}
+}
+
+// Regression: Run must itself notice changed inputs; rescanInBackground was
+// once defined but never called from the cheap tick.
+func TestRunRescansOnInputsChange(t *testing.T) {
+	fc := newFakeCentral(t)
+	ref, calls := "hc:4.4-1", 0
+	r := testRunner(t, fc.srv.URL, map[string]CheckFunc{}, []SectionSpec{inputsSection(&ref, &calls, nil)})
+	r.Cfg.ReportInterval = config.Duration{Duration: 50 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.Run(ctx); close(done) }()
+	time.Sleep(120 * time.Millisecond)
+	r.mu.Lock()
+	ref = "hc:4.4-2"
+	r.mu.Unlock()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		n := calls
+		r.mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if calls < 2 {
+		t.Fatalf("calls = %d, want a rescan after the ref changed", calls)
+	}
+}

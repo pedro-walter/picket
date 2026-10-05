@@ -81,10 +81,16 @@ type Runner struct {
 
 	StatePath string // JSON file holding the per-section cache + ack state
 
-	mu    sync.Mutex // serialises state-file access across cheap + section goroutines
-	scan  sync.Mutex // one section scan at a time (ticker and input-change rescans)
-	busy  atomic.Bool
-	tried map[string]attempt // section -> last input-triggered rescan (in memory only)
+	mu   sync.Mutex // serialises state-file access across cheap + section goroutines
+	scan sync.Mutex // one section scan at a time (ticker and input-change rescans)
+	busy atomic.Bool
+	bg   sync.WaitGroup // operator-requested rescans in flight
+	// rescanRunning is the request ID being worked on; rescanDone is the last
+	// finished ID, echoed in reports until central stops sending the request.
+	rescanRunning string
+	rescanDone    string
+	oneshot       bool
+	tried         map[string]attempt // section -> last input-triggered rescan (in memory only)
 
 	// RescanRetry is the minimum gap before an input-triggered rescan is
 	// retried for the same inputs after it failed. Zero means one hour.
@@ -152,11 +158,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			wg.Wait()
+			r.bg.Wait()
 			return ctx.Err()
 		case <-cheap.C:
 			if err := r.cheapCycle(ctx); err != nil {
 				r.Log.Error("cheap cycle", "err", err)
 			}
+			r.rescanInBackground(ctx) // watched refs changed since the last scan
 		}
 	}
 }
@@ -165,6 +173,7 @@ func (r *Runner) Run(ctx context.Context) error {
 // fresh section body is sent until central acks it, a single Oneshot fully
 // syncs central; a second Oneshot sends hash-only.
 func (r *Runner) Oneshot(ctx context.Context) error {
+	r.oneshot = true // every section just ran; a requested rescan is for the daemon
 	for _, s := range r.Sections {
 		if err := r.sectionCycle(ctx, s); err != nil {
 			r.Log.Warn("section cycle", "section", s.Name, "err", err)
@@ -176,13 +185,13 @@ func (r *Runner) Oneshot(ctx context.Context) error {
 // rescanInBackground rescans sections whose inputs changed without blocking
 // the host report (a trivy run takes minutes), then sends one extra report so
 // central gets the new body now rather than a full cheap interval later.
-func (r *Runner) rescanInBackground(ctx context.Context, wg *sync.WaitGroup) {
+func (r *Runner) rescanInBackground(ctx context.Context) {
 	if !r.busy.CompareAndSwap(false, true) {
 		return // previous rescan still running
 	}
-	wg.Add(1)
+	r.bg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer r.bg.Done()
 		defer r.busy.Store(false)
 		if r.rescanChanged(ctx) {
 			if err := r.cheapCycle(ctx); err != nil {
@@ -315,6 +324,9 @@ func (r *Runner) cheapCycle(ctx context.Context) error {
 	if len(sections) > 0 {
 		p.Sections = sections
 	}
+	r.mu.Lock()
+	p.RescanDone = r.rescanDone
+	r.mu.Unlock()
 
 	resp, err := r.Client.SendReport(ctx, p)
 	if err != nil {
@@ -322,6 +334,7 @@ func (r *Runner) cheapCycle(ctx context.Context) error {
 	}
 
 	r.applyAcks(resp)
+	r.handleRescan(ctx, resp)
 
 	r.Log.Info("reported",
 		"findings", len(p.Findings), "checks_run", p.ChecksRun,
@@ -329,6 +342,51 @@ func (r *Runner) cheapCycle(ctx context.Context) error {
 		"desired_version", resp.DesiredVersion)
 	r.maybeSelfUpdate(resp)
 	return nil
+}
+
+// handleRescan starts an operator-requested rescan in the background (a trivy
+// run takes minutes; the host report must not wait on it). Once it finishes it
+// sends an extra report carrying RescanDone so central clears the request.
+func (r *Runner) handleRescan(ctx context.Context, resp *report.Response) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	req := resp.Rescan
+	if req == nil {
+		r.rescanDone = "" // central cleared it; stop echoing
+		return
+	}
+	if r.oneshot || req.ID == r.rescanDone || req.ID == r.rescanRunning {
+		return
+	}
+	r.rescanRunning = req.ID
+	r.Log.Info("rescan requested", "id", req.ID, "sections", req.Sections)
+	r.bg.Add(1)
+	go func() {
+		defer r.bg.Done()
+		for _, s := range r.Sections {
+			if !wantsSection(req.Sections, s.Name) {
+				continue
+			}
+			if err := r.sectionCycle(ctx, s); err != nil {
+				r.Log.Warn("requested rescan", "section", s.Name, "err", err)
+			}
+		}
+		r.mu.Lock()
+		r.rescanDone, r.rescanRunning = req.ID, ""
+		r.mu.Unlock()
+		if err := r.cheapCycle(ctx); err != nil {
+			r.Log.Error("post-rescan cheap cycle", "err", err)
+		}
+	}()
+}
+
+func wantsSection(want []string, name string) bool {
+	for _, w := range want {
+		if w == "all" || w == name {
+			return true
+		}
+	}
+	return false
 }
 
 // applyAcks records which section bodies central now holds (stop resending)

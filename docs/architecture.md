@@ -39,8 +39,22 @@ picket-agent --(POST /api/v1/report, Bearer + HMAC)--> Worker
         -> match suppressions -> lifecycle diff (open/muted/resolved/reopened)
         -> email on change
         -> respond { desired_version, url, sha256, sig_url,
-                     sections_ack, sections_need_body }
+                     sections_ack, sections_need_body, rescan? }
 ```
+
+## Operator-requested rescan
+
+`picketctl rescan <agent|--all-agents> [image-scan|daily|all]` stores a request
+on the agent row (`rescan_id`, `rescan_sections`; migration 0006). Pull model —
+nothing connects *to* the agent: the next report's response carries
+`rescan: { id, sections }`. The agent rescans those sections in the background
+(cheap checks run every cycle anyway), then sends an extra report with
+`rescan_done: <id>`; central clears the row only if the id still matches, so a
+newer request survives. Until echoed, every response re-delivers it (agent crash
+or lost response just means a repeat scan). Latency is up to one
+`report_interval`. A scan with an unchanged hash refreshes `generated_at` /
+`confirmed_at` but sends no body. `picketctl rescan <agent> --cancel` drops it.
+Agents < 0.5.0 ignore the field and leave it pending.
 
 ## Report sections (hash-gated)
 
@@ -134,7 +148,7 @@ ancestors, never the reverse.
 | `unfixed` | only while the finding has no published fix (`fixed_version`, else `-> fixed in` in `detail`) | "no fix exists yet" decisions: an overlay that could patch the package is not silenced |
 | `all` | yes, fix or not | reachability decisions with evidence (pip-vendored copies, unused binaries) |
 
-**Vendored python copies (agent >= 0.4.0).** A python-pkg vulnerability with no `PkgPath` in trivy's output (pip's
+**Vendored python copies (agent >= 0.5.0).** A python-pkg vulnerability with no `PkgPath` in trivy's output (pip's
 bundled setuptools/urllib3/msgpack) gets identifier `CVE|pkg@vendored`; the top-level install keeps `CVE|pkg`. The
 matcher also tries a rule's `identifier_glob` against the identifier with `@vendored` stripped (`legacyIdentifier`
 in `server/src/suppress.ts`), so legacy `*|pkg` rules keep covering both. A rule written as `*|pkg@vendored`

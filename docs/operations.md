@@ -69,11 +69,17 @@ Current: `0001_init`, `0002_agent_sections` (hash-gated reports),
 `0003_releases` (self-update artifact registry), `0004_lineage` (image lineage +
 `suppressions.inherit`; additive, safe for a rolled-back Worker),
 `0005_scan_provenance` (nullable `findings.image_ref/image_digest/scanned_at`,
-`agent_sections.scans_json`; additive). Deploy order: migrate, `wrangler deploy`,
+`agent_sections.scans_json`; additive), `0006_rescan_request` (nullable
+`agents.rescan_*`; additive). Deploy order: migrate, `wrangler deploy`,
 then the agent release (`release add 0.3.0`, `rollout` a canary first) - either
 side works alone, and agents < 0.3.0 simply keep the 12h rescan window.
 `./picketctl scans [--agent N]` shows which refs/digests each section's current
 scan covered.
+
+Force a rescan: `./picketctl rescan <agent|--all-agents> [image-scan|daily|all]`
+— picked up on the agent's next report (≤ `report_interval`), needs the agent
+release that ships it (≥ 0.5.0; the version comes from the `v*` git tag via ldflags).
+Migrate + `wrangler deploy` first; `--cancel` drops a pending request.
 
 ## Rules, lineage and the review loop
 

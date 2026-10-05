@@ -19,6 +19,9 @@ type Payload struct {
 	Findings  []Finding          `json:"findings"`
 	Metrics   *Metrics           `json:"metrics,omitempty"`
 	Sections  map[string]Section `json:"sections,omitempty"`
+	// RescanDone echoes the ID of an operator rescan request the agent has
+	// finished, so central stops re-delivering it. Older centrals ignore it.
+	RescanDone string `json:"rescan_done,omitempty"`
 }
 
 // Section is a lower-cadence group of checks (e.g. "image-scan", "daily").
@@ -97,4 +100,14 @@ type Response struct {
 	// SectionsNeedBody names sections whose hash central does not recognise
 	// (fresh DB, lost report); the agent must resend the full body.
 	SectionsNeedBody []string `json:"sections_need_body,omitempty"`
+	// Rescan is an operator request to re-run sections now. Central re-sends
+	// it on every report until the agent echoes Rescan.ID in Payload.RescanDone.
+	Rescan *Rescan `json:"rescan,omitempty"`
+}
+
+// Rescan names the sections to re-run ("all" = every section the agent has).
+// The cheap tier runs every cycle regardless.
+type Rescan struct {
+	ID       string   `json:"id"`
+	Sections []string `json:"sections"`
 }

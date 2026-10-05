@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { authenticateAgent, authenticateAdmin } from './auth';
-import { ingestReport, applyNewSuppression, type ReportPayload } from './ingest';
+import { ingestReport, applyNewSuppression, RESCAN_SECTIONS, type ReportPayload } from './ingest';
 import { offlineCheck, dailyDigest, staleSectionCheck } from './cron';
 import { renderDashboard } from './dashboard';
 import { loadActiveSuppressions, loadStoredFindings, reevaluateFindings } from './lineage';
@@ -92,7 +92,8 @@ admin.post('/agents', async (c) => {
 
 admin.get('/agents', async (c) => {
   const rows = (await c.env.DB.prepare(
-    `SELECT id, name, agent_version, desired_version, rollout_bucket, last_report_at, notes, created_at
+    `SELECT id, name, agent_version, desired_version, rollout_bucket, last_report_at, notes, created_at,
+            rescan_id, rescan_sections, rescan_requested_at
      FROM agents ORDER BY name`,
   ).all()).results;
   return c.json({ agents: rows });
@@ -121,6 +122,33 @@ admin.patch('/agents/:name', async (c) => {
     .bind(...vals)
     .run();
   return c.json({ updated: r.meta.changes });
+});
+
+// Ask an agent to rescan on its next report. Body: { sections?: ["image-scan"|"daily"|"all"] }, default all.
+// The agent's cheap checks run every cycle anyway; this forces the lower-cadence sections.
+admin.post('/agents/:name/rescan', async (c) => {
+  const b = (await c.req.json<{ sections?: string[] }>().catch(() => ({}))) as { sections?: string[] };
+  const sections = b.sections?.length ? [...new Set(b.sections)] : ['all'];
+  const bad = sections.filter((s) => !RESCAN_SECTIONS.includes(s));
+  if (bad.length) return c.json({ error: `unknown section(s) ${bad.join(', ')}; valid: ${RESCAN_SECTIONS.join(', ')}` }, 400);
+  const id = uuid();
+  const r = await c.env.DB.prepare(
+    'UPDATE agents SET rescan_id = ?, rescan_sections = ?, rescan_requested_at = ? WHERE name = ?',
+  )
+    .bind(id, JSON.stringify(sections), nowIso(), c.req.param('name'))
+    .run();
+  if (!r.meta.changes) return c.json({ error: 'no such agent' }, 404);
+  return c.json({ agent: c.req.param('name'), rescan_id: id, sections });
+});
+
+// cancel a pending rescan request
+admin.delete('/agents/:name/rescan', async (c) => {
+  const r = await c.env.DB.prepare(
+    'UPDATE agents SET rescan_id = NULL, rescan_sections = NULL, rescan_requested_at = NULL WHERE name = ?',
+  )
+    .bind(c.req.param('name'))
+    .run();
+  return c.json({ cleared: r.meta.changes });
 });
 
 admin.get('/findings', async (c) => {

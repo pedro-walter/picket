@@ -43,6 +43,8 @@ export interface ReportPayload {
     };
   };
   sections?: Record<string, ReportSection>;
+  /** id of the rescan request the agent has finished (agent >= 0.5.0) */
+  rescan_done?: string;
 }
 
 export interface SelfUpdateResponse {
@@ -57,6 +59,8 @@ export interface ReportResponse extends SelfUpdateResponse {
   sections_ack?: Record<string, string>;
   /** sections whose hash central does not recognise (resend the full body) */
   sections_need_body?: string[];
+  /** operator-requested rescan; re-sent on every report until the agent echoes `rescan_done: id` */
+  rescan?: { id: string; sections: string[] };
 }
 
 type FP = ReportedFinding & { fingerprint: string };
@@ -332,9 +336,38 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
   await maybeNotify(env, agent.name, opened, reopened, escalated, resolved);
 
   const resp: ReportResponse = { ...(await selfUpdateResponse(env, agent, payload.arch)) };
+  const rescan = await pendingRescan(env, agent, payload.rescan_done);
+  if (rescan) resp.rescan = rescan;
   if (Object.keys(sectionsAck).length) resp.sections_ack = sectionsAck;
   if (sectionsNeedBody.length) resp.sections_need_body = sectionsNeedBody;
   return resp;
+}
+
+/** Sections an operator may ask an agent to rescan ("all" = every section it has). */
+export const RESCAN_SECTIONS = ['all', 'image-scan', 'daily'];
+
+/**
+ * The agent's pending rescan request, or null. A `done` echo matching the
+ * request id clears it; the id guard means a request made after the agent
+ * fetched the old one is not lost.
+ */
+async function pendingRescan(env: Env, agent: Agent, done?: string): Promise<ReportResponse['rescan'] | null> {
+  if (!agent.rescan_id) return null;
+  if (done && done === agent.rescan_id) {
+    await env.DB.prepare(
+      'UPDATE agents SET rescan_id = NULL, rescan_sections = NULL, rescan_requested_at = NULL WHERE id = ? AND rescan_id = ?',
+    )
+      .bind(agent.id, agent.rescan_id)
+      .run();
+    return null;
+  }
+  let sections: string[] = ['all'];
+  try {
+    sections = JSON.parse(agent.rescan_sections ?? '["all"]');
+  } catch {
+    /* fall back to all */
+  }
+  return { id: agent.rescan_id, sections };
 }
 
 export async function maybeNotify(
