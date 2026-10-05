@@ -103,6 +103,10 @@ type Response struct {
 	// Rescan is an operator request to re-run sections now. Central re-sends
 	// it on every report until the agent echoes Rescan.ID in Payload.RescanDone.
 	Rescan *Rescan `json:"rescan,omitempty"`
+	// ForceUpdate means apply DesiredVersion now, ignoring update_window
+	// (self_update must still be enabled). Central clears it once the agent
+	// reports running DesiredVersion.
+	ForceUpdate bool `json:"force_update,omitempty"`
 }
 
 // Rescan names the sections to re-run ("all" = every section the agent has).

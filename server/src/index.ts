@@ -93,7 +93,7 @@ admin.post('/agents', async (c) => {
 admin.get('/agents', async (c) => {
   const rows = (await c.env.DB.prepare(
     `SELECT id, name, agent_version, desired_version, rollout_bucket, last_report_at, notes, created_at,
-            rescan_id, rescan_sections, rescan_requested_at
+            rescan_id, rescan_sections, rescan_requested_at, update_now
      FROM agents ORDER BY name`,
   ).all()).results;
   return c.json({ agents: rows });
@@ -139,6 +139,28 @@ admin.post('/agents/:name/rescan', async (c) => {
     .run();
   if (!r.meta.changes) return c.json({ error: 'no such agent' }, 404);
   return c.json({ agent: c.req.param('name'), rescan_id: id, sections });
+});
+
+// Force an agent to self-update now, ignoring its update_window. Body: { version? } sets desired_version
+// first (must be a registered release); otherwise the agent's current desired/default version is used.
+// Still needs self_update: true on the agent and a registered release for the desired version.
+admin.post('/agents/:name/update', async (c) => {
+  const b = (await c.req.json<{ version?: string }>().catch(() => ({}))) as { version?: string };
+  const name = c.req.param('name');
+  const a = await c.env.DB.prepare('SELECT desired_version FROM agents WHERE name = ?').bind(name).first<{ desired_version: string | null }>();
+  if (!a) return c.json({ error: 'no such agent' }, 404);
+  const v = (b.version ?? a.desired_version ?? c.env.DEFAULT_DESIRED_VERSION ?? '').replace(/^v/, '');
+  if (!v) return c.json({ error: 'no version: pass {version} (agent has no desired_version)' }, 400);
+  if (!(await c.env.DB.prepare('SELECT 1 FROM releases WHERE version = ?').bind(v).first())) {
+    return c.json({ error: `no registered release ${v} (picketctl release add first)` }, 400);
+  }
+  await c.env.DB.prepare('UPDATE agents SET desired_version = ?, update_now = 1 WHERE name = ?').bind(v, name).run();
+  return c.json({ agent: name, version: v, force_update: true });
+});
+
+admin.delete('/agents/:name/update', async (c) => {
+  const r = await c.env.DB.prepare('UPDATE agents SET update_now = 0 WHERE name = ?').bind(c.req.param('name')).run();
+  return c.json({ cleared: r.meta.changes });
 });
 
 // cancel a pending rescan request

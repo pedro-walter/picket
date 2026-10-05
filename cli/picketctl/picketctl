@@ -52,6 +52,9 @@ picketctl <command> [args]
                                           ask agent(s) to re-run on their next report; sections:
                                           image-scan | daily | all (default). Cheap checks run every cycle anyway.
   rescan <agent> --cancel                 drop a pending request
+  update <agent|--all-agents> [version]   force a self-update NOW, ignoring the agent's update_window
+                                          (version must be a registered release; default: its desired_version)
+  update <agent> --cancel                 drop a pending force-update
   findings [--agent N] [--status S]       list findings (image findings show image_ref/image_digest/scanned_at)
   scans [--agent N]                       per agent+section: when the scan ran and which image refs/digests it covered
   ack <fingerprint>                       acknowledge an open finding
@@ -156,8 +159,24 @@ case "$cmd" in
     fi
     ;;
 
+  update)
+    target="${1:?usage: picketctl update <agent|--all-agents> [version] | <agent> --cancel}"; shift
+    if [ "${1:-}" = --cancel ]; then
+      req DELETE "/admin/agents/$target/update" | pretty
+      exit 0
+    fi
+    if [ -n "${1:-}" ]; then body="{\"version\":$(json_str "${1#v}")}"; else body='{}'; fi
+    if [ "$target" = --all-agents ]; then
+      req GET /admin/agents | { if command -v jq >/dev/null 2>&1; then jq -r '.agents[].name'; else echo "--all-agents needs jq" >&2; exit 2; fi; } |
+        while IFS= read -r a; do printf '%s: ' "$a"; req POST "/admin/agents/$a/update" --data "$body"; echo; done
+    else
+      req POST "/admin/agents/$target/update" --data "$body" | pretty
+    fi
+    ;;
+
   findings)
     qs=""
+""
 ""
     while [ $# -gt 0 ]; do
       case "$1" in

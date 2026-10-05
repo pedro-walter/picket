@@ -583,3 +583,34 @@ func TestRunRescansOnInputsChange(t *testing.T) {
 		t.Fatalf("calls = %d, want a rescan after the ref changed", calls)
 	}
 }
+
+func TestForceUpdateBypassesWindowButNotSelfUpdateOff(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		selfUpdate bool
+		force      bool
+		want       int
+	}{
+		{"forced outside window", true, true, 1},
+		{"not forced outside window", true, false, 0},
+		{"forced but self_update disabled", false, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := newFakeCentral(t)
+			fc.respond = func(report.Payload) report.Response {
+				return report.Response{OK: true, DesiredVersion: "0.9.0", URL: "http://x/b", SHA256: "ab", SigURL: "http://x/b.sig", ForceUpdate: tc.force}
+			}
+			fu := &fakeUpdater{updated: false}
+			r := testRunner(t, fc.srv.URL, map[string]CheckFunc{}, nil)
+			r.Cfg.SelfUpdate = tc.selfUpdate
+			r.Cfg.UpdateWindow = "02:00-02:01"
+			r.Updater = fu
+			if err := r.cheapCycle(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if fu.called != tc.want {
+				t.Errorf("updater called %d times, want %d", fu.called, tc.want)
+			}
+		})
+	}
+}

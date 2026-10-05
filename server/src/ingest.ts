@@ -61,6 +61,8 @@ export interface ReportResponse extends SelfUpdateResponse {
   sections_need_body?: string[];
   /** operator-requested rescan; re-sent on every report until the agent echoes `rescan_done: id` */
   rescan?: { id: string; sections: string[] };
+  /** apply desired_version now, ignoring the agent's update_window (agent >= 0.6.0) */
+  force_update?: boolean;
 }
 
 type FP = ReportedFinding & { fingerprint: string };
@@ -338,9 +340,23 @@ export async function ingestReport(env: Env, agent: Agent, payload: ReportPayloa
   const resp: ReportResponse = { ...(await selfUpdateResponse(env, agent, payload.arch)) };
   const rescan = await pendingRescan(env, agent, payload.rescan_done);
   if (rescan) resp.rescan = rescan;
+  if (await pendingForceUpdate(env, agent, payload.agent_version, resp.desired_version)) resp.force_update = true;
   if (Object.keys(sectionsAck).length) resp.sections_ack = sectionsAck;
   if (sectionsNeedBody.length) resp.sections_need_body = sectionsNeedBody;
   return resp;
+}
+
+/**
+ * True while an operator-requested update is outstanding. It is done once the
+ * agent reports running the version it was told to reach (the swap restarts it).
+ */
+async function pendingForceUpdate(env: Env, agent: Agent, running: string | undefined, desired: string): Promise<boolean> {
+  if (!agent.update_now) return false;
+  if (running && running === desired) {
+    await env.DB.prepare('UPDATE agents SET update_now = 0 WHERE id = ?').bind(agent.id).run();
+    return false;
+  }
+  return true;
 }
 
 /** Sections an operator may ask an agent to rescan ("all" = every section it has). */

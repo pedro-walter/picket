@@ -39,7 +39,7 @@ picket-agent --(POST /api/v1/report, Bearer + HMAC)--> Worker
         -> match suppressions -> lifecycle diff (open/muted/resolved/reopened)
         -> email on change
         -> respond { desired_version, url, sha256, sig_url,
-                     sections_ack, sections_need_body, rescan? }
+                     sections_ack, sections_need_body, rescan?, force_update? }
 ```
 
 ## Operator-requested rescan
@@ -55,6 +55,18 @@ or lost response just means a repeat scan). Latency is up to one
 `report_interval`. A scan with an unchanged hash refreshes `generated_at` /
 `confirmed_at` but sends no body. `picketctl rescan <agent> --cancel` drops it.
 Agents < 0.5.0 ignore the field and leave it pending.
+
+## Forced self-update
+
+Normally an agent applies `desired_version` only inside its local `update_window`.
+`picketctl update <agent|--all-agents> [version]` sets `agents.update_now`
+(migration 0007; version, if given, must be a registered release and becomes
+`desired_version`). Reports then carry `force_update: true`, and the agent skips
+the window check. It still honours `self_update: true` and verifies the sha256 +
+cosign signature, so this cannot push an unsigned binary or override an
+operator who disabled self-update. Central clears the flag once the agent reports
+running `desired_version` (the swap restarts the process); `--cancel` drops it.
+Agents < 0.6.0 ignore the field and keep waiting for their window.
 
 ## Report sections (hash-gated)
 

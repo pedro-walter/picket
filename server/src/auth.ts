@@ -13,6 +13,7 @@ export interface Agent {
   notes: string | null;
   rescan_id: string | null;
   rescan_sections: string | null;
+  update_now: number;
 }
 
 const MAX_SKEW_SECONDS = 300;

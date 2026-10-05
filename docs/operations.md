@@ -70,7 +70,7 @@ Current: `0001_init`, `0002_agent_sections` (hash-gated reports),
 `suppressions.inherit`; additive, safe for a rolled-back Worker),
 `0005_scan_provenance` (nullable `findings.image_ref/image_digest/scanned_at`,
 `agent_sections.scans_json`; additive), `0006_rescan_request` (nullable
-`agents.rescan_*`; additive). Deploy order: migrate, `wrangler deploy`,
+`agents.rescan_*`; additive), `0007_force_update` (`agents.update_now`; additive). Deploy order: migrate, `wrangler deploy`,
 then the agent release (`release add 0.3.0`, `rollout` a canary first) - either
 side works alone, and agents < 0.3.0 simply keep the 12h rescan window.
 `./picketctl scans [--agent N]` shows which refs/digests each section's current
@@ -80,6 +80,13 @@ Force a rescan: `./picketctl rescan <agent|--all-agents> [image-scan|daily|all]`
 — picked up on the agent's next report (≤ `report_interval`), needs the agent
 release that ships it (≥ 0.5.0; the version comes from the `v*` git tag via ldflags).
 Migrate + `wrangler deploy` first; `--cancel` drops a pending request.
+
+Force an agent update now, ignoring its `update_window`:
+`./picketctl update <agent|--all-agents> [version]` (needs agent ≥ 0.6.0 for the
+bypass to take effect; the target version must be `release add`ed first). It
+rides on the next report, so a server picks it up within one `report_interval`.
+Agents with `self_update: false` still refuse. `--cancel` drops it. Bootstrapping
+agents < 0.6.0 onto 0.6.0 still waits for their window (or edit `update_window`).
 
 ## Rules, lineage and the review loop
 

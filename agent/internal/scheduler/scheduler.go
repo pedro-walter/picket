@@ -478,7 +478,7 @@ func (r *Runner) sectionCycle(ctx context.Context, spec SectionSpec) error {
 }
 
 // maybeSelfUpdate applies an offered upgrade if enabled, inside the update
-// window, and the Updater verifies the artifact. On a successful swap the
+// window (unless central forces it), and the Updater verifies the artifact. On a successful swap the
 // process exits so the supervisor (systemd Restart=always) runs the new binary.
 func (r *Runner) maybeSelfUpdate(resp *report.Response) {
 	if r.Updater == nil || !r.Cfg.SelfUpdate {
@@ -487,7 +487,7 @@ func (r *Runner) maybeSelfUpdate(resp *report.Response) {
 	if resp.DesiredVersion == "" || resp.DesiredVersion == r.Version {
 		return
 	}
-	if !r.Cfg.InUpdateWindow(time.Now()) {
+	if !resp.ForceUpdate && !r.Cfg.InUpdateWindow(time.Now()) {
 		r.Log.Info("update available, outside update_window",
 			"have", r.Version, "want", resp.DesiredVersion, "window", r.Cfg.UpdateWindow)
 		return
