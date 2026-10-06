@@ -7,9 +7,13 @@
 # The base image has no USER directive (runs as root; haproxy drops
 # privileges itself), so none is set here either.
 #
+# 0.5.0-2 (2026-10-06) adds libssl3/libcrypto3 (CVE-2026-14456; Alpine 3.24 fix
+# 3.5.8-r0, base ships 3.5.7-r0). Upstream still has no tag newer than v0.5.0
+# (Docker Hub, last pushed 2026-07-27, checked 2026-10-06).
+#
 # Bump BASE_TAG when upstream cuts a release past v0.5.0; re-run
 # /picket-review afterward to see whether this override is still needed.
 ARG BASE_TAG=v0.5.0
 FROM tecnativa/docker-socket-proxy:${BASE_TAG}
 
-RUN apk upgrade --no-cache pcre2
+RUN apk upgrade --no-cache pcre2 libssl3 libcrypto3

@@ -32,11 +32,11 @@ for what that looked like the last two times.
 Current overlays:
 
 - [`tecnativa/docker-socket-proxy/`](./tecnativa/docker-socket-proxy/Dockerfile) —
-  `apk upgrade pcre2` (Alpine 3.24 fix 10.49-r0) on top of
+  `apk upgrade pcre2 libssl3 libcrypto3` (Alpine 3.24 fixes 10.49-r0 / 3.5.8-r0) on top of
   `tecnativa/docker-socket-proxy:v0.5.0`, upstream's newest tag (last pushed
-  2026-07-27). Pushed as `docker.souspike.com.br/tecnativa/docker-socket-proxy:0.5.0-1`
-  on 2026-10-05; compose not yet pointed at it. See
-  [`docs/reviews/2026-10-05-image-cve.md`](../docs/reviews/2026-10-05-image-cve.md).
+  2026-07-27). Pushed as `docker.souspike.com.br/tecnativa/docker-socket-proxy:0.5.0-2`
+  on 2026-10-06 (`0.5.0-1`, pcre2 only, 2026-10-05); compose not yet pointed at it. See
+  [`docs/reviews/2026-10-06-image-cve.md`](../docs/reviews/2026-10-06-image-cve.md).
 - [`healthchecks/healthchecks/`](./healthchecks/healthchecks/Dockerfile) —
   patches perl-base/libpcre2-8-0/libsqlite3-0/gzip/libssh2-1t64/libssl3t64/
   openssl/openssl-provider-legacy (apt) + setuptools/msgpack (pip) on top
