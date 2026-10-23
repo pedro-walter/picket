@@ -57,6 +57,13 @@ Current overlays:
   not yet pointed at it) adds PyJWT/urllib3 (pip) and the openssl
   `deb13u3` point release — see
   [`docs/reviews/2026-09-30-image-cve.md`](../docs/reviews/2026-09-30-image-cve.md).
+- [`linuxserver/jellyfin/`](./linuxserver/jellyfin/Dockerfile) —
+  `apt-get install --only-upgrade curl libcurl4t64` (CVE-2026-92392; Ubuntu 26.04 fix
+  8.18.0-1ubuntu2.8) on top of `lscr.io/linuxserver/jellyfin:12.2ubu2604-ls55`, which is what
+  `latest` served on 2026-10-21 and still ships 2.7. Pushed as
+  `docker.souspike.com.br/linuxserver/jellyfin:12.2ubu2604-ls55-1` on 2026-10-21; compose not yet
+  pointed at it. linuxserver rebuilds weekly, so expect to drop this soon. See
+  [`docs/reviews/2026-10-21-image-cve.md`](../docs/reviews/2026-10-21-image-cve.md).
 
 ## Declare the overlay's lineage (so suppression decisions carry over)
 

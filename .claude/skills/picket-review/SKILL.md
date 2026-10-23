@@ -119,6 +119,24 @@ Everything needed lives in the findings themselves:
   | jq -r '.results[] | "\(.name)\t\(.last_updated)"'` — the `last_updated`
   on the currently-pinned tag itself tells you whether/when it was last
   rebuilt.
+- **Pin drift (every pinned image, findings or not)** — `image-tag` only flags
+  a *rebuilt* tag; it did not flag zot `v2.1.21` -> `v2.1.22`, and a muted
+  finding drops out of `findings --status open` entirely, so neither would ever
+  surface a new upstream release. So once per review, take every distinct `ref`
+  from `picketctl scans` (all agents, `images` not null) and check each against
+  its registry, regardless of whether the image has open findings:
+  - **Versioned pin** (`v2.1.22`, `0.58.0-alpine`, `4.4-2`): list newer releases
+    (Docker Hub tags API sorted by `last_updated`, or GitHub releases for the
+    project; for overlays check the *upstream* in `picketctl lineage list`).
+    Report same-major/minor newer tags as "update available" and a new major as
+    "major available, not a drop-in", linking the vendor's upgrade guide.
+  - **Rolling tag** (`16-alpine`, `v3.7`, `latest`): compare the scan's
+    `digest` with the registry's current digest for that tag; a mismatch means
+    the host is stale (recreate), a match means it is current.
+  Put the result in a "Pin drift" table in the report, one row per image
+  (pinned, newest, verdict), and list muted images too (name the rule and expiry
+  that is silencing it). This is what tells the operator a suppression for
+  "no fix released yet" can now be dropped.
 - **Is a fix published?** — trivy appends `-> fixed in <version>` to
   `detail` whenever the distro repo has one. Its absence means "no fix
   exists yet," full stop — don't infer one.
